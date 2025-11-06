@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 
 from sqlmodel import SQLModel, create_engine, Session, select
 from sqlalchemy import event, inspect, text
+from sqlalchemy.exc import NoSuchTableError
 from sqlalchemy.engine import Engine
 from sqlalchemy.pool import StaticPool
 
@@ -218,30 +219,80 @@ class DatabaseService:
         if not self.engine:
             return
 
-        try:
-            inspector = inspect(self.engine)
-            columns = {column["name"] for column in inspector.get_columns("accounts")}
-        except Exception as exc:
-            self.logger.warning(f"Unable to inspect database schema: {exc}")
-            return
+        inspector = inspect(self.engine)
 
-        if "is_premium" not in columns:
-            self.logger.info("Adding missing 'is_premium' column to accounts table")
+        def _get_columns(table_name: str) -> set[str]:
+            try:
+                return {column["name"] for column in inspector.get_columns(table_name)}
+            except NoSuchTableError:
+                self.logger.debug(
+                    "Skipping schema patch for missing table '%s'", table_name
+                )
+                return set()
+            except Exception as exc:  # pragma: no cover - defensive guard
+                self.logger.warning(
+                    "Unable to inspect database schema for table '%s': %s",
+                    table_name,
+                    exc,
+                )
+                return set()
+
+        def _add_column(
+            table_name: str,
+            column_name: str,
+            definition: str,
+            post_statements: tuple[str, ...] = (),
+        ) -> None:
+            self.logger.info(
+                "Adding missing column '%s.%s' to legacy database", table_name, column_name
+            )
             try:
                 with self.engine.begin() as connection:
                     connection.execute(
                         text(
-                            "ALTER TABLE accounts "
-                            "ADD COLUMN is_premium BOOLEAN NOT NULL DEFAULT 0"
+                            f"ALTER TABLE {table_name} "
+                            f"ADD COLUMN {column_name} {definition}"
                         )
                     )
-                    connection.execute(
-                        text("UPDATE accounts SET is_premium = 0 WHERE is_premium IS NULL")
-                    )
-            except Exception as exc:
+                    for statement in post_statements:
+                        connection.execute(text(statement))
+            except Exception as exc:  # pragma: no cover - operational safeguard
                 self.logger.error(
-                    f"Failed to add 'is_premium' column to accounts table: {exc}"
+                    "Failed to add column '%s.%s': %s", table_name, column_name, exc
                 )
+
+        account_columns = _get_columns("accounts")
+        if "is_premium" not in account_columns:
+            _add_column(
+                "accounts",
+                "is_premium",
+                "BOOLEAN NOT NULL DEFAULT 0",
+                ("UPDATE accounts SET is_premium = 0 WHERE is_premium IS NULL",),
+            )
+
+        template_columns = _get_columns("templates")
+        if template_columns:
+            template_json_columns = {
+                "entity_spans",
+                "subject_span_metadata",
+                "body_span_metadata",
+                "caption_span_metadata",
+                "rich_body",
+                "rich_caption",
+            }
+
+            for column in template_json_columns - template_columns:
+                _add_column("templates", column, "TEXT")
+
+        campaign_columns = _get_columns("campaigns")
+        if campaign_columns:
+            campaign_json_columns = {
+                "caption_span_metadata",
+                "message_span_metadata",
+            }
+
+            for column in campaign_json_columns - campaign_columns:
+                _add_column("campaigns", column, "TEXT")
     
     def restore_database(self, backup_path: Path) -> None:
         """Restore database from backup."""
