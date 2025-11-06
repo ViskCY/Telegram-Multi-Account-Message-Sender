@@ -362,6 +362,7 @@ This will generate variations like:
 - **Internet Connection**: Required for Telegram API
 - **Sufficient Disk Space**: At least 1GB free space
 - **Adequate RAM**: At least 4GB recommended
+- **Supported Operating Systems**: Windows 10/11, macOS 10.15+, Linux (Ubuntu 18.04+, CentOS 7+, Arch Linux, Omarchy rolling release)
 
 ## Tips and Tricks
 

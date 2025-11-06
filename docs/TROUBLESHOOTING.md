@@ -61,6 +61,7 @@ conda install pyqt
 # Method 3: Using system package manager (Linux)
 sudo apt-get install python3-pyqt5  # Ubuntu/Debian
 sudo yum install python3-qt5        # CentOS/RHEL
+sudo pacman -S --needed python python-pyqt5 python-pip base-devel  # Arch/Omarchy
 ```
 
 ### Windows-specific Issues

@@ -1,0 +1,41 @@
+# Maintainer: VoxHash <contact@voxhash.dev>
+# Target Distribution: Omarchy (Arch-based)
+pkgname=telegram-multi-account-sender
+pkgver=1.2.3
+pkgrel=1
+pkgdesc="Professional-grade desktop application for managing and sending messages across multiple Telegram accounts"
+arch=('any')
+url="https://github.com/VoxHash/Telegram-Multi-Account-Message-Sender"
+license=('BSD-3-Clause')
+depends=('python' 'python-pyqt5' 'python-pip')
+makedepends=('python-setuptools' 'base-devel')
+provides=('telegram-multi-account-sender')
+conflicts=('telegram-multi-account-sender')
+source=("https://github.com/VoxHash/Telegram-Multi-Account-Message-Sender/archive/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+    cd "$srcdir/Telegram-Multi-Account-Message-Sender-$pkgver"
+
+    # Install application
+    python setup.py install --root="$pkgdir" --optimize=1
+
+    # Create desktop entry
+    install -Dm644 assets/icons/favicon.ico "$pkgdir/usr/share/pixmaps/$pkgname.ico"
+    # Install high-resolution icons for Omarchy desktop environments
+    install -Dm644 assets/icons/telegram-multiaccount-sender_256.png "$pkgdir/usr/share/icons/hicolor/256x256/apps/$pkgname.png"
+    install -Dm644 assets/icons/telegram-multiaccount-sender_512.png "$pkgdir/usr/share/icons/hicolor/512x512/apps/$pkgname.png"
+    install -Dm644 assets/icons/telegram-multiaccount-sender.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/$pkgname.svg"
+
+    cat > "$pkgdir/usr/share/applications/$pkgname.desktop" << EOF
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Telegram Multi-Account Message Sender
+Comment=Professional-grade desktop application for managing and sending messages across multiple Telegram accounts
+Exec=$pkgname
+Icon=$pkgname
+Terminal=false
+Categories=Network;InstantMessaging;
+EOF
+}

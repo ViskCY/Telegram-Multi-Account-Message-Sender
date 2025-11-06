@@ -37,7 +37,7 @@ Yes, this application is open-source and free to use under the BSD 3-Clause Lice
 The application supports:
 - Windows 10/11
 - macOS 10.15+
-- Linux (Ubuntu 18.04+, CentOS 7+, Arch Linux)
+- Linux (Ubuntu 18.04+, CentOS 7+, Arch Linux, Omarchy rolling release)
 
 ### What are the system requirements?
 
