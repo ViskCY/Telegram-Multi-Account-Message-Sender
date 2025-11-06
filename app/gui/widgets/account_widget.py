@@ -238,6 +238,9 @@ class TelegramWorker(QThread):
                     # First step: send verification code
                     self.progress.emit("Sending verification code...")
                     result = await client.send_code_request(self.phone_number)
+
+                    # Store the phone code hash so it can be reused if needed (e.g. for 2FA)
+                    self.phone_code_hash = result.phone_code_hash
                     
                     # Update account status to CONNECTING
                     self._update_account_status(AccountStatus.CONNECTING)
@@ -247,30 +250,38 @@ class TelegramWorker(QThread):
                     return
                 else:
                     # Second step: verify code
-                    self.progress.emit("Verifying code...")
                     try:
-                        if self.phone_code_hash:
-                            await client.sign_in(
-                                self.phone_number,
-                                self.verification_code,
-                                phone_code_hash=self.phone_code_hash,
-                            )
-                        else:
-                            await client.sign_in(
-                                self.phone_number,
-                                self.verification_code,
-                            )
-
-                        # Check if 2FA is required
-                        if not await client.is_user_authorized():
-                            if not self.password:
-                                self.logger.info("2FA password required during authorization")
-                                self.finished.emit("2FA_PASSWORD_REQUIRED", False)
-                                return
-
-                            # Sign in with 2FA password
+                        if self.password and not self.verification_code:
+                            # 2FA follow-up step - only submit the password as the code
+                            # verification was already completed in a previous attempt
                             self.progress.emit("Verifying 2FA password...")
                             await client.sign_in(password=self.password)
+                        else:
+                            self.progress.emit("Verifying code...")
+                            if self.phone_code_hash:
+                                await client.sign_in(
+                                    self.phone_number,
+                                    self.verification_code,
+                                    phone_code_hash=self.phone_code_hash,
+                                )
+                            else:
+                                await client.sign_in(
+                                    self.phone_number,
+                                    self.verification_code,
+                                )
+
+                            # Check if 2FA is required
+                            if not await client.is_user_authorized():
+                                if not self.password:
+                                    self.logger.info("2FA password required during authorization")
+                                    # Disconnect before returning so the event loop can close cleanly
+                                    await client.disconnect()
+                                    self.finished.emit("2FA_PASSWORD_REQUIRED", False)
+                                    return
+
+                                # Sign in with 2FA password
+                                self.progress.emit("Verifying 2FA password...")
+                                await client.sign_in(password=self.password)
 
                         # Authorization successful
                         self._update_account_status(AccountStatus.ONLINE)
@@ -282,11 +293,13 @@ class TelegramWorker(QThread):
 
                     except SessionPasswordNeededError:
                         self.logger.info("2FA password required during authorization")
+                        await client.disconnect()
                         self.finished.emit("2FA_PASSWORD_REQUIRED", False)
                         return
                     except PasswordHashInvalidError:
                         self.logger.warning("Invalid 2FA password provided")
                         self._update_account_status(AccountStatus.ERROR)
+                        await client.disconnect()
                         self.finished.emit("❌ Invalid 2FA password. Please try again.", False)
                         return
                     except Exception as e:
