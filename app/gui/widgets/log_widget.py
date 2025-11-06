@@ -44,9 +44,9 @@ class LogViewer(QWidget):
         # Header
         header_layout = QHBoxLayout()
         
-        title_label = QLabel(_("logs.title"))
-        title_label.setFont(QFont("Arial", 14, QFont.Bold))
-        header_layout.addWidget(title_label)
+        self.title_label = QLabel(_("logs.title"))
+        self.title_label.setFont(QFont("Arial", 14, QFont.Bold))
+        header_layout.addWidget(self.title_label)
         
         header_layout.addStretch()
         
