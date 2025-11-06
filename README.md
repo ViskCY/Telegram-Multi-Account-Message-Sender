@@ -85,6 +85,16 @@ python main.py
 #### Option 3: Using installers
 Download the appropriate installer from the [Releases](https://github.com/VoxHash/Telegram-Multi-Account-Message-Sender/releases) page.
 
+#### Option 4: Omarchy package (Arch-based)
+For Omarchy and other Arch-based distributions, use the tailored PKGBUILD provided in this repository:
+
+```bash
+sudo pacman -S --needed base-devel python python-pip python-pyqt5
+makepkg -p PKGBUILD.omarchy -si
+```
+
+The Omarchy PKGBUILD installs high-resolution icons and desktop entries so the application feels native on Omarchy while remaining compatible with the wider Arch ecosystem.
+
 ### Configuration
 
 1. **Get Telegram API Credentials**:
@@ -146,14 +156,14 @@ Download the appropriate installer from the [Releases](https://github.com/VoxHas
 - 4GB RAM
 - 1GB free disk space
 - Internet connection
-- Windows 10, macOS 10.15, or Linux (Ubuntu 18.04+)
+- Windows 10, macOS 10.15, or Linux (Ubuntu 18.04+, CentOS 7+, Arch Linux, Omarchy rolling release)
 
 ### Recommended Requirements
 - Python 3.11+
 - 8GB RAM
 - 5GB free disk space
 - Stable internet connection
-- Windows 11, macOS 12+, or Linux (Ubuntu 20.04+)
+- Windows 11, macOS 12+, or Linux (Ubuntu 20.04+, CentOS 8+, Arch Linux, Omarchy rolling release)
 
 ## 🔧 Usage
 

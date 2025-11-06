@@ -11,14 +11,33 @@ import shutil
 import platform
 from pathlib import Path
 import json
+import re
 
 class BuildManager:
     def __init__(self):
         self.project_name = "telegram-multi-account-sender"
-        self.version = "1.2.0"
+        self.version = self._load_project_version()
         self.build_dir = Path("build")
         self.dist_dir = Path("dist")
         self.current_platform = platform.system().lower()
+
+    def _load_project_version(self) -> str:
+        """Load the current project version from pyproject.toml or setup.py."""
+        version_pattern = re.compile(r'^version\s*=\s*["\']([^"\']+)["\']', re.MULTILINE)
+
+        pyproject_path = Path("pyproject.toml")
+        if pyproject_path.exists():
+            match = version_pattern.search(pyproject_path.read_text(encoding="utf-8"))
+            if match:
+                return match.group(1)
+
+        setup_path = Path("setup.py")
+        if setup_path.exists():
+            match = version_pattern.search(setup_path.read_text(encoding="utf-8"))
+            if match:
+                return match.group(1)
+
+        return "1.2.0"
         
     def clean_build_dirs(self):
         """Clean build and dist directories"""
@@ -387,50 +406,121 @@ pip3 install --user telethon sqlmodel pydantic rich cryptography qrcode
         except subprocess.CalledProcessError as e:
             print(f"   ❌ Failed to create .tar.gz: {e}")
     
-    def create_arch_pkgbuild(self):
-        """Create Arch Linux PKGBUILD"""
-        print("   📦 Creating Arch Linux PKGBUILD...")
-        
-        pkgbuild_content = f'''# Maintainer: VoxHash <contact@voxhash.dev>
-pkgname={self.project_name}
-pkgver={self.version}
-pkgrel=1
-pkgdesc="Professional-grade desktop application for managing and sending messages across multiple Telegram accounts"
-arch=('any')
-url="https://github.com/VoxHash/Telegram-Multi-Account-Message-Sender"
-license=('BSD-3-Clause')
-depends=('python' 'python-pyqt5' 'python-pip')
-makedepends=('python-setuptools')
-source=("https://github.com/VoxHash/Telegram-Multi-Account-Message-Sender/archive/v$pkgver.tar.gz")
-sha256sums=('SKIP')
+    def _generate_arch_pkgbuild(
+        self,
+        pkgname: str,
+        distro_label: str,
+        *,
+        depends=None,
+        makedepends=None,
+        provides=None,
+        conflicts=None,
+        extra_install_lines=None,
+    ) -> str:
+        """Generate PKGBUILD content for Arch-based distributions."""
 
-package() {{
-    cd "$srcdir/Telegram-Multi-Account-Message-Sender-$pkgver"
-    
-    # Install application
-    python setup.py install --root="$pkgdir" --optimize=1
-    
-    # Create desktop entry
-    install -Dm644 assets/icons/favicon.ico "$pkgdir/usr/share/pixmaps/$pkgname.ico"
-    
-    cat > "$pkgdir/usr/share/applications/$pkgname.desktop" << EOF
-[Desktop Entry]
-Version=1.0
-Type=Application
-Name=Telegram Multi-Account Message Sender
-Comment=Professional-grade desktop application for managing and sending messages across multiple Telegram accounts
-Exec=$pkgname
-Icon=$pkgname
-Terminal=false
-Categories=Network;InstantMessaging;
-EOF
-}}
-'''
-        
+        depends = depends or ["python", "python-pyqt5", "python-pip"]
+        makedepends = makedepends or ["python-setuptools"]
+        extra_install_lines = extra_install_lines or []
+
+        depends_str = " ".join(f"'{dep}'" for dep in depends)
+        makedepends_str = " ".join(f"'{dep}'" for dep in makedepends)
+
+        optional_lines = []
+        if provides:
+            provides_str = " ".join(f"'{item}'" for item in provides)
+            optional_lines.append(f"provides=({provides_str})")
+        if conflicts:
+            conflicts_str = " ".join(f"'{item}'" for item in conflicts)
+            optional_lines.append(f"conflicts=({conflicts_str})")
+
+        lines = [
+            "# Maintainer: VoxHash <contact@voxhash.dev>",
+            f"# Target Distribution: {distro_label}",
+            f"pkgname={pkgname}",
+            f"pkgver={self.version}",
+            "pkgrel=1",
+            "pkgdesc=\"Professional-grade desktop application for managing and sending messages across multiple Telegram accounts\"",
+            "arch=('any')",
+            "url=\"https://github.com/VoxHash/Telegram-Multi-Account-Message-Sender\"",
+            "license=('BSD-3-Clause')",
+            f"depends=({depends_str})",
+            f"makedepends=({makedepends_str})",
+        ]
+
+        lines.extend(optional_lines)
+
+        lines.extend(
+            [
+                'source=("https://github.com/VoxHash/Telegram-Multi-Account-Message-Sender/archive/v$pkgver.tar.gz")',
+                "sha256sums=('SKIP')",
+                "",
+                "package() {",
+                '    cd "$srcdir/Telegram-Multi-Account-Message-Sender-$pkgver"',
+                "",
+                "    # Install application",
+                '    python setup.py install --root="$pkgdir" --optimize=1',
+                "",
+                "    # Create desktop entry",
+                '    install -Dm644 assets/icons/favicon.ico "$pkgdir/usr/share/pixmaps/$pkgname.ico"',
+            ]
+        )
+
+        lines.extend(extra_install_lines)
+
+        lines.extend(
+            [
+                "",
+                '    cat > "$pkgdir/usr/share/applications/$pkgname.desktop" << EOF',
+                "[Desktop Entry]",
+                "Version=1.0",
+                "Type=Application",
+                "Name=Telegram Multi-Account Message Sender",
+                "Comment=Professional-grade desktop application for managing and sending messages across multiple Telegram accounts",
+                "Exec=$pkgname",
+                "Icon=$pkgname",
+                "Terminal=false",
+                "Categories=Network;InstantMessaging;",
+                "EOF",
+                "}",
+                "",
+            ]
+        )
+
+        return "\n".join(lines)
+
+    def create_arch_pkgbuild(self):
+        """Create PKGBUILD files for Arch Linux and Omarchy."""
+        print("   📦 Creating Arch Linux PKGBUILD...")
+
+        arch_pkgbuild = self._generate_arch_pkgbuild(
+            pkgname=self.project_name,
+            distro_label="Arch Linux",
+        )
+
         with open("PKGBUILD", "w") as f:
-            f.write(pkgbuild_content)
-        
-        print("   ✅ PKGBUILD created successfully")
+            f.write(arch_pkgbuild)
+
+        print("   📦 Creating Omarchy PKGBUILD...")
+
+        omarchy_pkgbuild = self._generate_arch_pkgbuild(
+            pkgname=self.project_name,
+            distro_label="Omarchy (Arch-based)",
+            makedepends=["python-setuptools", "base-devel"],
+            provides=[self.project_name],
+            conflicts=[self.project_name],
+            extra_install_lines=[
+                "    # Install high-resolution icons for Omarchy desktop environments",
+                '    install -Dm644 assets/icons/telegram-multiaccount-sender_256.png "$pkgdir/usr/share/icons/hicolor/256x256/apps/$pkgname.png"',
+                '    install -Dm644 assets/icons/telegram-multiaccount-sender_512.png "$pkgdir/usr/share/icons/hicolor/512x512/apps/$pkgname.png"',
+                '    install -Dm644 assets/icons/telegram-multiaccount-sender.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/$pkgname.svg"',
+            ],
+        )
+
+        with open("PKGBUILD.omarchy", "w") as f:
+            f.write(omarchy_pkgbuild)
+
+        print("   ✅ PKGBUILD files created successfully (Arch Linux & Omarchy)")
     
     def build_macos(self):
         """Build macOS application bundle"""
