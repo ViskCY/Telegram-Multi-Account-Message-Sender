@@ -78,7 +78,8 @@ class TestMessageWorker(QThread):
                         account_id=self.account_id,
                         peer=self.recipient_identifier,
                         text=processed_message,
-                        media_path=self.media_path
+                        media_path=self.media_path,
+                        entities=None,
                     )
                     
                     if result.get('success', False):

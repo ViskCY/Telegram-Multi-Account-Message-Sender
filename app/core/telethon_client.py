@@ -129,7 +129,13 @@ class TelegramClientWrapper:
             self.account.error_message = str(e)
             return False
     
-    async def send_message(self, peer: str, text: str, media_path: Optional[str] = None) -> Dict[str, Any]:
+    async def send_message(
+        self,
+        peer: str,
+        text: str,
+        media_path: Optional[str] = None,
+        entities: Optional[List[Any]] = None,
+    ) -> Dict[str, Any]:
         """Send a message."""
         if not self.client or not self._connected or not self._authorized:
             return {"success": False, "error": "Client not ready"}
@@ -144,23 +150,29 @@ class TelegramClientWrapper:
                 if media_path.startswith(('http://', 'https://')):
                     # It's a URL - send as URL
                     message = await self.client.send_file(
-                        entity, 
-                        media_path, 
-                        caption=text
+                        entity,
+                        media_path,
+                        caption=text,
+                        caption_entities=entities,
                     )
                 elif os.path.exists(media_path):
                     # It's a local file path
                     message = await self.client.send_file(
-                        entity, 
-                        media_path, 
-                        caption=text
+                        entity,
+                        media_path,
+                        caption=text,
+                        caption_entities=entities,
                     )
                 else:
                     # Invalid media path
                     self.logger.warning(f"Media path does not exist: {media_path}")
-                    message = await self.client.send_message(entity, text)
+                    message = await self.client.send_message(
+                        entity, text, entities=entities
+                    )
             else:
-                message = await self.client.send_message(entity, text)
+                message = await self.client.send_message(
+                    entity, text, entities=entities
+                )
             
             self.logger.log_telegram_event(
                 "send_message", 
@@ -274,12 +286,21 @@ class TelegramClientManager:
         
         return await self.clients[account_id].authorize(phone_code, password)
     
-    async def send_message(self, account_id: int, peer: str, text: str, media_path: Optional[str] = None) -> Dict[str, Any]:
+    async def send_message(
+        self,
+        account_id: int,
+        peer: str,
+        text: str,
+        media_path: Optional[str] = None,
+        entities: Optional[List[Any]] = None,
+    ) -> Dict[str, Any]:
         """Send a message using an account."""
         if account_id not in self.clients:
             return {"success": False, "error": "Account not found"}
-        
-        return await self.clients[account_id].send_message(peer, text, media_path)
+
+        return await self.clients[account_id].send_message(
+            peer, text, media_path, entities=entities
+        )
     
     def get_client(self, account_id: int) -> Optional[TelegramClientWrapper]:
         """Get a client by account ID."""

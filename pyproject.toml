@@ -184,6 +184,7 @@ markers = [
     "integration: marks tests as integration tests",
     "unit: marks tests as unit tests",
     "ui: marks tests as UI tests",
+    "asyncio: marks tests that require the asyncio event loop",
 ]
 
 [tool.coverage.run]
