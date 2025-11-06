@@ -2,7 +2,7 @@
 Testing widget for sending test messages.
 """
 
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Set
 from datetime import datetime
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
@@ -126,7 +126,11 @@ class TestingWidget(QWidget):
         self.spintax_processor = SpintaxProcessor()
         self.translation_manager = get_translation_manager()
         self.recent_tests = []  # Store recent tests in memory
-        
+        self._accounts_by_id: Dict[int, Account] = {}
+        self._template_lookup: Dict[int, MessageTemplate] = {}
+        self._all_templates: List[MessageTemplate] = []
+        self._premium_warning_shown_for: Set[int] = set()
+
         # Connect language change signal
         self.translation_manager.language_changed.connect(self.on_language_changed)
         
@@ -154,6 +158,7 @@ class TestingWidget(QWidget):
         # Account selection
         self.account_combo = QComboBox()
         self.account_combo.setPlaceholderText(_("testing.select_account"))
+        self.account_combo.currentIndexChanged.connect(self.on_account_changed)
         form_group_layout.addRow(_("common.account") + ":", self.account_combo)
         
         # Recipient selection
@@ -361,20 +366,22 @@ class TestingWidget(QWidget):
         """Load accounts, recipients, and templates."""
         try:
             with get_session() as session:
+                self._premium_warning_shown_for.clear()
+
                 # Load accounts
                 accounts = session.query(Account).filter(Account.deleted_at.is_(None)).all()
+                self.account_combo.blockSignals(True)
                 self.account_combo.clear()
                 self.logger.info(f"Loading {len(accounts)} accounts for testing")
+                self._accounts_by_id.clear()
                 for account in accounts:
-                    status = getattr(account.status, "value", account.status)
-                    status_icon = "🟢" if str(status).upper() == "ONLINE" else "🔴"
-                    premium_icon = " ⭐" if getattr(account, "is_premium", False) else ""
-                    self.account_combo.addItem(
-                        f"{status_icon} {account.phone_number}{premium_icon}",
-                        account.id,
-                    )
+                    if account.id is not None:
+                        self._accounts_by_id[account.id] = account
+                    status_icon = "🟢" if account.status == "ONLINE" else "🔴"
+                    self.account_combo.addItem(f"{status_icon} {account.phone_number}", account.id)
                     self.logger.debug(f"Added account: {account.phone_number} (ID: {account.id})")
-                
+                self.account_combo.blockSignals(False)
+
                 # Load recipients
                 recipients = session.query(Recipient).filter(Recipient.deleted_at.is_(None)).all()
                 self.recipient_combo.clear()
@@ -391,17 +398,100 @@ class TestingWidget(QWidget):
                     
                     identifier = recipient.get_identifier()
                     self.recipient_combo.addItem(f"{icon} {name} ({identifier})", identifier)
-                
+
                 # Load templates
                 templates = session.query(MessageTemplate).filter(MessageTemplate.deleted_at.is_(None)).all()
-                self.template_combo.clear()
-                self.template_combo.addItem("None", None)
-                for template in templates:
-                    self.template_combo.addItem(template.name, template.id)
-                
+                self._all_templates = templates
+                self._template_lookup = {
+                    template.id: template for template in templates if template.id is not None
+                }
+                self.refresh_template_options()
+
         except Exception as e:
             self.logger.error(f"Error loading data: {e}")
             QMessageBox.critical(self, "Error", f"Failed to load data: {e}")
+
+    def get_selected_account(self) -> Optional[Account]:
+        """Return the currently selected account object if available."""
+
+        account_id = self.account_combo.currentData()
+        if not account_id:
+            return None
+
+        account = self._accounts_by_id.get(account_id)
+        if account:
+            return account
+
+        with get_session() as session:
+            account = session.get(Account, account_id)
+            if account:
+                self._accounts_by_id[account_id] = account
+            return account
+
+    def refresh_template_options(self) -> None:
+        """Filter templates based on the currently selected account."""
+
+        current_template_id = self.template_combo.currentData()
+        account = self.get_selected_account()
+        hide_premium = bool(account and not getattr(account, "is_premium", False))
+
+        available_templates: List[MessageTemplate] = []
+        hidden_templates: List[MessageTemplate] = []
+
+        for template in self._all_templates:
+            if template.id is None:
+                continue
+            if hide_premium and template.requires_premium:
+                hidden_templates.append(template)
+            else:
+                available_templates.append(template)
+
+        self.template_combo.blockSignals(True)
+        self.template_combo.clear()
+        self.template_combo.addItem("None", None)
+        for template in available_templates:
+            self.template_combo.addItem(template.name, template.id)
+        self.template_combo.blockSignals(False)
+
+        tooltip = ""
+        if hide_premium and hidden_templates:
+            preview = ", ".join(t.name for t in hidden_templates[:3])
+            remaining = len(hidden_templates) - 3
+            if remaining > 0:
+                preview += f" (+{remaining})"
+            tooltip = (
+                "Premium-only templates are hidden because the selected account "
+                "does not have Telegram Premium. Hidden templates: "
+                f"{preview}."
+            )
+            account_key = account.id if account and account.id is not None else -1
+            if account_key not in self._premium_warning_shown_for:
+                QMessageBox.information(
+                    self,
+                    "Premium templates unavailable",
+                    "The selected account does not have Telegram Premium. "
+                    "Choose a different account or edit the template to remove custom emojis.",
+                )
+                self._premium_warning_shown_for.add(account_key)
+        self.template_combo.setToolTip(tooltip)
+
+        if current_template_id:
+            index = self.template_combo.findData(current_template_id)
+            if index != -1:
+                self.template_combo.setCurrentIndex(index)
+            else:
+                self.template_combo.setCurrentIndex(0)
+                if hide_premium:
+                    self.message_edit.clear()
+        else:
+            self.template_combo.setCurrentIndex(0)
+
+    def on_account_changed(self, index: int) -> None:
+        """Recompute template visibility when the account selection changes."""
+
+        # index is unused but required by the signal signature
+        _ = index
+        self.refresh_template_options()
     
     def on_template_changed(self, template_name):
         """Handle template selection change."""
@@ -431,6 +521,7 @@ class TestingWidget(QWidget):
         try:
             # Validate inputs
             account_id = self.account_combo.currentData()
+            account = self.get_selected_account()
             recipient_identifier = self.recipient_combo.currentData()
             message_text = self.message_edit.toPlainText().strip()
             
@@ -443,12 +534,18 @@ class TestingWidget(QWidget):
                 # Try to get account ID from the current index
                 account_id = self.account_combo.itemData(self.account_combo.currentIndex())
                 self.logger.debug(f"Retrieved account ID from index: {account_id}")
-            
+
             if not account_id:
                 self.logger.warning("No account selected")
                 QMessageBox.warning(self, _("testing.validation_error"), _("testing.please_select_account"))
                 return
-            
+
+            if account is None and account_id:
+                with get_session() as session:
+                    account = session.get(Account, account_id)
+                    if account:
+                        self._accounts_by_id[account_id] = account
+
             # Check if recipient is selected by index instead of data
             if not recipient_identifier and self.recipient_combo.currentIndex() >= 0:
                 # Try to get recipient identifier from the current index
@@ -462,6 +559,23 @@ class TestingWidget(QWidget):
             if not message_text:
                 QMessageBox.warning(self, _("testing.validation_error"), _("testing.please_enter_message"))
                 return
+
+            template_id = self.template_combo.currentData()
+            if template_id:
+                template = self._template_lookup.get(template_id)
+                if template is None:
+                    with get_session() as session:
+                        template = session.get(MessageTemplate, template_id)
+                        if template:
+                            self._template_lookup[template_id] = template
+                if template and template.requires_premium and not (account and getattr(account, "is_premium", False)):
+                    QMessageBox.warning(
+                        self,
+                        "Premium template unavailable",
+                        "This template uses custom emojis that require Telegram Premium. "
+                        "Select a premium-enabled account or choose a different template.",
+                    )
+                    return
             
             # Disable send button
             self.send_button.setEnabled(False)
