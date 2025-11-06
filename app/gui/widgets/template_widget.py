@@ -2,23 +2,280 @@
 Template management widgets.
 """
 
-from typing import Optional, List, Dict, Any
+import asyncio
+import base64
+from typing import Optional, List, Dict, Any, Callable
+from uuid import uuid4
+
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QLineEdit, QPushButton, QTableWidget, QTableWidgetItem,
     QHeaderView, QGroupBox, QComboBox, QCheckBox, QSpinBox,
     QMessageBox, QDialog, QDialogButtonBox, QFormLayout,
-    QTextEdit, QFileDialog, QAbstractItemView
+    QTextEdit, QFileDialog, QAbstractItemView, QToolButton,
+    QScrollArea, QApplication
 )
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import QFont, QIcon, QColor
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QUrl, QSize
+from PyQt5.QtGui import (
+    QFont, QIcon, QColor, QImage, QPixmap, QTextCursor,
+    QTextDocument, QTextCharFormat, QTextImageFormat, QTextFormat
+)
 
 from ...models import MessageTemplate
+from ...models.account import Account
 from ...services import get_logger
 from ...services.db import get_session
 from ...services.translation import _, get_translation_manager
 from ...core import SpintaxProcessor
+from telethon import TelegramClient, functions, types
+from sqlmodel import select
 
+
+CUSTOM_EMOJI_ENTITY_TYPE = "custom_emoji"
+
+
+class CustomEmojiPickerDialog(QDialog):
+    """Dialog that displays available custom emojis for insertion."""
+
+    def __init__(self, parent: Optional[QWidget], emojis: List[Dict[str, Any]]):
+        super().__init__(parent)
+        self.setWindowTitle("Select Custom Emoji")
+        self.setModal(True)
+        self.selected_emoji: Optional[Dict[str, Any]] = None
+
+        layout = QVBoxLayout(self)
+        description = QLabel(
+            "Click a custom emoji to insert it into your template."
+        )
+        description.setWordWrap(True)
+        layout.addWidget(description)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        container = QWidget()
+        grid = QGridLayout(container)
+        grid.setSpacing(8)
+        scroll.setWidget(container)
+
+        columns = 6
+        for index, emoji in enumerate(emojis):
+            button = QToolButton()
+            button.setToolButtonStyle(Qt.ToolButtonIconOnly)
+            button.setAutoRaise(True)
+            button.setIconSize(QSize(48, 48))
+            pixmap = self._build_pixmap(emoji)
+            if pixmap is not None:
+                button.setIcon(QIcon(pixmap))
+            else:
+                button.setText(emoji.get("shortcode") or emoji.get("emoji", "✨"))
+            button.setToolTip(emoji.get("shortcode") or str(emoji.get("custom_emoji_id")))
+            button.clicked.connect(lambda checked=False, data=emoji: self._select_emoji(data))
+            grid.addWidget(button, index // columns, index % columns)
+
+        layout.addWidget(scroll)
+
+        footer = QDialogButtonBox(QDialogButtonBox.Cancel)
+        footer.rejected.connect(self.reject)
+        layout.addWidget(footer)
+
+    @staticmethod
+    def _build_pixmap(emoji: Dict[str, Any]) -> Optional[QPixmap]:
+        """Build a pixmap from emoji data if possible."""
+        image_data = emoji.get("image_data")
+        if not image_data:
+            return None
+        try:
+            raw = base64.b64decode(image_data)
+        except (ValueError, TypeError):
+            return None
+
+        pixmap = QPixmap()
+        if pixmap.loadFromData(raw):
+            return pixmap
+        return None
+
+    def _select_emoji(self, emoji: Dict[str, Any]) -> None:
+        self.selected_emoji = emoji
+        self.accept()
+
+
+class TelethonEntityEditor(QWidget):
+    """Rich text editor that tracks Telethon entities."""
+
+    ENTITY_TYPE_PROPERTY = QTextFormat.UserProperty + 201
+    ENTITY_ID_PROPERTY = QTextFormat.UserProperty + 202
+    ENTITY_META_PROPERTY = QTextFormat.UserProperty + 203
+
+    textChanged = pyqtSignal()
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self._custom_emoji_handler: Optional[Callable[[], Optional[Dict[str, Any]]]] = None
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        toolbar_layout = QHBoxLayout()
+        toolbar_layout.setContentsMargins(0, 0, 0, 0)
+        toolbar_layout.setSpacing(6)
+
+        self.custom_emoji_button = QToolButton()
+        self.custom_emoji_button.setText("Insert Custom Emoji")
+        self.custom_emoji_button.setIcon(QIcon.fromTheme("face-smile"))
+        self.custom_emoji_button.clicked.connect(self._handle_custom_emoji_click)
+        toolbar_layout.addWidget(self.custom_emoji_button)
+        toolbar_layout.addStretch()
+
+        layout.addLayout(toolbar_layout)
+
+        self.text_edit = QTextEdit()
+        self.text_edit.setAcceptRichText(True)
+        self.text_edit.textChanged.connect(self.textChanged)
+        layout.addWidget(self.text_edit)
+
+    def set_custom_emoji_handler(self, handler: Callable[[], Optional[Dict[str, Any]]]) -> None:
+        """Set a callback that returns emoji data for insertion."""
+        self._custom_emoji_handler = handler
+
+    def setPlaceholderText(self, text: str) -> None:  # noqa: N802 - Qt API
+        self.text_edit.setPlaceholderText(text)
+
+    def setMinimumHeight(self, height: int) -> None:  # noqa: N802 - Qt API
+        self.text_edit.setMinimumHeight(height)
+
+    def to_plain_text(self) -> str:
+        return self.text_edit.toPlainText()
+
+    def set_plain_text(self, text: str) -> None:
+        self.text_edit.setPlainText(text)
+
+    def set_content(self, text: str, spans: Optional[List[Dict[str, Any]]] = None) -> None:
+        self.text_edit.blockSignals(True)
+        self.text_edit.setPlainText(text or "")
+        self.text_edit.blockSignals(False)
+        if spans:
+            self.apply_entity_spans(spans)
+
+    def apply_entity_spans(self, spans: List[Dict[str, Any]]) -> None:
+        if not spans:
+            return
+
+        for span in sorted(spans, key=lambda item: item.get("start", 0)):
+            if span.get("type") != CUSTOM_EMOJI_ENTITY_TYPE:
+                continue
+
+            position = span.get("start", 0)
+            emoji_meta = {
+                "custom_emoji_id": span.get("custom_emoji_id"),
+                "shortcode": span.get("shortcode"),
+                "emoji": span.get("emoji"),
+                "cdn_url": span.get("cdn_url"),
+                "image_data": span.get("image_data"),
+                "is_animated": span.get("is_animated", False),
+            }
+            self.insert_custom_emoji(emoji_meta, position)
+
+    def insert_custom_emoji(self, emoji: Dict[str, Any], position: Optional[int] = None) -> None:
+        image = QImage()
+        image_data = emoji.get("image_data")
+        if image_data:
+            try:
+                raw = base64.b64decode(image_data)
+                image.loadFromData(raw)
+            except (ValueError, TypeError):
+                image = QImage()
+
+        cursor = QTextCursor(self.text_edit.document())
+        if position is not None:
+            plain_length = len(self.text_edit.toPlainText())
+            pos = max(0, min(position, plain_length))
+            cursor.setPosition(pos)
+            if pos < plain_length:
+                cursor.movePosition(QTextCursor.Right, QTextCursor.KeepAnchor, 1)
+        else:
+            cursor = self.text_edit.textCursor()
+
+        if image.isNull():
+            shortcode = emoji.get("shortcode") or emoji.get("emoji") or "[emoji]"
+            cursor.insertText(shortcode)
+            return
+
+        resource_name = f"custom-emoji://{emoji.get('custom_emoji_id')}-{uuid4()}"
+        document: QTextDocument = self.text_edit.document()
+        document.addResource(QTextDocument.ImageResource, QUrl(resource_name), image)
+
+        image_format = QTextImageFormat()
+        image_format.setName(resource_name)
+        target_size = 32
+        if image.width() > 0 and image.height() > 0:
+            scale = target_size / max(image.width(), image.height())
+            image_format.setWidth(image.width() * scale)
+            image_format.setHeight(image.height() * scale)
+        else:
+            image_format.setWidth(target_size)
+            image_format.setHeight(target_size)
+
+        image_format.setProperty(self.ENTITY_TYPE_PROPERTY, CUSTOM_EMOJI_ENTITY_TYPE)
+        image_format.setProperty(self.ENTITY_ID_PROPERTY, emoji.get("custom_emoji_id"))
+        serializable_meta = {
+            "custom_emoji_id": emoji.get("custom_emoji_id"),
+            "shortcode": emoji.get("shortcode"),
+            "emoji": emoji.get("emoji"),
+            "cdn_url": emoji.get("cdn_url"),
+            "image_data": emoji.get("image_data"),
+            "is_animated": emoji.get("is_animated", False),
+        }
+        image_format.setProperty(self.ENTITY_META_PROPERTY, serializable_meta)
+
+        cursor.insertImage(image_format)
+
+    def get_entity_spans(self) -> List[Dict[str, Any]]:
+        spans: List[Dict[str, Any]] = []
+        document = self.text_edit.document()
+        cursor = QTextCursor(document)
+        cursor.movePosition(QTextCursor.Start)
+
+        while True:
+            cursor = document.find("\uFFFC", cursor)
+            if cursor.isNull():
+                break
+
+            start = cursor.selectionStart()
+            char_format: QTextCharFormat = cursor.charFormat()
+            if not char_format.isImageFormat():
+                continue
+
+            if char_format.property(self.ENTITY_TYPE_PROPERTY) != CUSTOM_EMOJI_ENTITY_TYPE:
+                continue
+
+            meta = char_format.property(self.ENTITY_META_PROPERTY) or {}
+            spans.append({
+                "start": start,
+                "end": start + 1,
+                "type": CUSTOM_EMOJI_ENTITY_TYPE,
+                "custom_emoji_id": char_format.property(self.ENTITY_ID_PROPERTY),
+                "shortcode": meta.get("shortcode"),
+                "emoji": meta.get("emoji"),
+                "cdn_url": meta.get("cdn_url"),
+                "image_data": meta.get("image_data"),
+                "is_animated": meta.get("is_animated", False),
+            })
+
+        return spans
+
+    def _handle_custom_emoji_click(self) -> None:
+        if not self._custom_emoji_handler:
+            QMessageBox.information(
+                self,
+                "Custom Emojis",
+                "No custom emoji provider is configured."
+            )
+            return
+
+        emoji = self._custom_emoji_handler()
+        if emoji:
+            self.insert_custom_emoji(emoji)
 
 class TemplateDialog(QDialog):
     """Dialog for creating/editing templates."""
@@ -30,8 +287,10 @@ class TemplateDialog(QDialog):
         self.template = template
         self.logger = get_logger()
         self.spintax_processor = SpintaxProcessor()
+        self._emoji_cache: Dict[int, List[Dict[str, Any]]] = {}
+        self._account_lookup: Dict[int, Account] = {}
         self.setup_ui()
-        
+
         if template:
             self.load_template_data()
     
@@ -53,35 +312,51 @@ class TemplateDialog(QDialog):
         self.name_edit = QLineEdit()
         self.name_edit.setPlaceholderText(_("templates.template_name_placeholder"))
         basic_layout.addRow(_("common.name") + ":", self.name_edit)
-        
+
         self.description_edit = QLineEdit()
         self.description_edit.setPlaceholderText(_("templates.template_description_placeholder"))
         basic_layout.addRow(_("common.description") + ":", self.description_edit)
-        
+
+        self.account_combo = QComboBox()
+        self.account_combo.setEditable(False)
+        basic_layout.addRow("Authoring account:", self.account_combo)
+
         layout.addWidget(basic_group)
-        
+
         # Message Content
         message_group = QGroupBox(_("templates.message_content"))
         message_layout = QVBoxLayout(message_group)
-        
+
         # Message text
         message_layout.addWidget(QLabel(_("common.message_text") + ":"))
-        self.message_edit = QTextEdit()
-        self.message_edit.setPlaceholderText(_("templates.message_template_placeholder"))
-        self.message_edit.setMinimumHeight(150)
-        message_layout.addWidget(self.message_edit)
-        
+        self.message_editor = TelethonEntityEditor(self)
+        self.message_editor.setPlaceholderText(_("templates.message_template_placeholder"))
+        self.message_editor.setMinimumHeight(150)
+        self.message_editor.set_custom_emoji_handler(self.open_custom_emoji_picker)
+        message_layout.addWidget(self.message_editor)
+
         # Variables help
         variables_help = QLabel(_("templates.available_variables"))
         variables_help.setStyleSheet("color: #888888; font-style: italic;")
         message_layout.addWidget(variables_help)
-        
+
         # Variables vs Spintax explanation
-        explanation = QLabel(_("templates.variables_explanation"))
+        explanation = QLabel(_("templates.variables_explanation") +
+                              "\n\nCustom emojis are stored with their Telegram ID. "
+                              "When used inside spintax blocks, ensure each variation keeps a "
+                              "compatible emoji placeholder so entity mappings remain valid.")
         explanation.setStyleSheet("color: #4CAF50; font-weight: bold; padding: 8px; background-color: #1a1a1a; border: 1px solid #4CAF50; border-radius: 4px;")
         explanation.setWordWrap(True)
         message_layout.addWidget(explanation)
-        
+
+        custom_emoji_tip = QLabel(
+            "Custom emojis preview inline using cached media. If a cached preview is missing, "
+            "the emoji will still send using its custom_emoji_id."
+        )
+        custom_emoji_tip.setWordWrap(True)
+        custom_emoji_tip.setStyleSheet("color: #FFA726; font-size: 11px;")
+        message_layout.addWidget(custom_emoji_tip)
+
         layout.addWidget(message_group)
         
         # Spintax Settings
@@ -121,17 +396,209 @@ class TemplateDialog(QDialog):
         buttons.accepted.connect(self.save_template)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
-        
+
+        self.populate_authoring_accounts()
+
         # Initialize spintax settings as disabled
         self.toggle_spintax_settings(False)
-    
+
     def event(self, event):
         """Handle events including help button clicks."""
         if event.type() == event.EnterWhatsThisMode:
             self.show_help()
             return True
         return super().event(event)
-    
+
+    def populate_authoring_accounts(self) -> None:
+        """Populate the account selector used for emoji retrieval."""
+        self.account_combo.clear()
+        self._account_lookup.clear()
+
+        placeholder = _("testing.select_account")
+        self.account_combo.addItem(placeholder, None)
+
+        session = get_session()
+        try:
+            accounts = session.exec(select(Account).where(Account.is_deleted == False)).all()  # noqa: E712
+        except Exception as exc:  # pragma: no cover - defensive logging
+            self.logger.error(f"Failed to load accounts: {exc}")
+            self.account_combo.clear()
+            self.account_combo.addItem("No connected accounts", None)
+            self.account_combo.setEnabled(False)
+            return
+        finally:
+            session.close()
+
+        if not accounts:
+            self.account_combo.clear()
+            self.account_combo.addItem("No connected accounts", None)
+            self.account_combo.setEnabled(False)
+            return
+
+        self.account_combo.setEnabled(True)
+        for account in accounts:
+            self._account_lookup[account.id] = account
+            self.account_combo.addItem(account.name, account.id)
+
+        if self.account_combo.count() > 1:
+            self.account_combo.setCurrentIndex(1)
+
+    def get_selected_account(self) -> Optional[Account]:
+        """Return the currently selected account object."""
+        account_id = self.account_combo.currentData()
+        if not account_id:
+            return None
+
+        account = self._account_lookup.get(account_id)
+        if account:
+            return account
+
+        session = get_session()
+        try:
+            account = session.exec(select(Account).where(Account.id == account_id)).first()
+            if account:
+                self._account_lookup[account_id] = account
+            return account
+        finally:
+            session.close()
+
+    def _run_async(self, coroutine_factory: Callable[[], Any]) -> Any:
+        """Execute an async coroutine from the GUI thread."""
+        try:
+            return asyncio.run(coroutine_factory())
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            try:
+                asyncio.set_event_loop(loop)
+                return loop.run_until_complete(coroutine_factory())
+            finally:
+                asyncio.set_event_loop(None)
+                loop.close()
+
+    def open_custom_emoji_picker(self) -> Optional[Dict[str, Any]]:
+        """Fetch custom emojis for the selected account and show the picker."""
+        account = self.get_selected_account()
+        if not account:
+            QMessageBox.warning(
+                self,
+                "Custom Emojis",
+                "Select an authoring account to load custom emojis."
+            )
+            return None
+
+        emojis = self._emoji_cache.get(account.id)
+        if emojis is None:
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            try:
+                emojis = self._run_async(lambda: self._fetch_custom_emojis_async(account))
+                self._emoji_cache[account.id] = emojis or []
+            except Exception as exc:  # pragma: no cover - UI feedback path
+                self.logger.error(f"Failed to fetch custom emojis: {exc}")
+                QMessageBox.critical(
+                    self,
+                    "Custom Emojis",
+                    f"Unable to load custom emojis for {account.name}: {exc}"
+                )
+                emojis = []
+            finally:
+                QApplication.restoreOverrideCursor()
+
+        if not emojis:
+            QMessageBox.information(
+                self,
+                "Custom Emojis",
+                "No custom emojis available for this account yet."
+            )
+            return None
+
+        dialog = CustomEmojiPickerDialog(self, emojis)
+        if dialog.exec_() == QDialog.Accepted and dialog.selected_emoji:
+            return dialog.selected_emoji
+        return None
+
+    async def _fetch_custom_emojis_async(self, account: Account) -> List[Dict[str, Any]]:
+        """Fetch custom emojis for an account via Telethon."""
+        client = TelegramClient(account.session_path, account.api_id, account.api_hash)
+        await client.connect()
+        try:
+            if not await client.is_user_authorized():
+                raise RuntimeError("Account session is not authorized. Please sign in before fetching emojis.")
+
+            groups = await client(functions.messages.GetEmojiStickerGroupsRequest(hash=0))
+            emoticons: List[str] = []
+            if isinstance(groups, types.messages.EmojiGroups):
+                for group in groups.groups:
+                    if getattr(group, "emoticons", None):
+                        emoticons.extend(group.emoticons)
+
+            doc_ids: List[int] = []
+            emoji_map: Dict[int, str] = {}
+            seen_ids = set()
+            max_results = 200
+
+            for emoticon in emoticons:
+                if len(doc_ids) >= max_results:
+                    break
+                try:
+                    results = await client(functions.messages.SearchCustomEmojiRequest(emoticon=emoticon, hash=0))
+                except Exception:
+                    continue
+
+                if isinstance(results, types.EmojiList):
+                    for doc_id in results.document_id:
+                        if doc_id in seen_ids:
+                            continue
+                        seen_ids.add(doc_id)
+                        doc_ids.append(doc_id)
+                        emoji_map[int(doc_id)] = emoticon
+                        if len(doc_ids) >= max_results:
+                            break
+
+            if not doc_ids:
+                return []
+
+            documents = await client(functions.messages.GetCustomEmojiDocumentsRequest(document_id=doc_ids))
+            emojis: List[Dict[str, Any]] = []
+
+            for document in documents:
+                image_bytes = None
+                thumbs = getattr(document, "thumbs", None)
+                if thumbs:
+                    for thumb in thumbs:
+                        if getattr(thumb, "bytes", None):
+                            image_bytes = thumb.bytes
+                            break
+
+                if image_bytes is None:
+                    try:
+                        image_bytes = await client.download_media(document, bytes)
+                    except Exception:
+                        image_bytes = None
+
+                base64_image = None
+                if image_bytes:
+                    try:
+                        base64_image = base64.b64encode(image_bytes).decode("ascii")
+                    except Exception:
+                        base64_image = None
+
+                custom_emoji_id = int(getattr(document, "id", 0))
+                mime_type = getattr(document, "mime_type", "") or ""
+                is_animated = mime_type in {"application/x-tgsticker", "video/webm"}
+
+                emojis.append({
+                    "custom_emoji_id": custom_emoji_id,
+                    "emoji": emoji_map.get(custom_emoji_id),
+                    "shortcode": emoji_map.get(custom_emoji_id),
+                    "cdn_url": f"https://t.me/i/emoji/{custom_emoji_id}.webp",
+                    "image_data": base64_image,
+                    "is_animated": is_animated,
+                })
+
+            return emojis
+        finally:
+            await client.disconnect()
+
     def show_help(self):
         """Show help dialog."""
         help_text = """
@@ -147,8 +614,9 @@ class TemplateDialog(QDialog):
         <ul>
         <li><b>Message Text:</b> Your main message template</li>
         <li><b>Variables:</b> Use {name}, {email}, {phone}, {company}, {date}, {time} for personalization</li>
+        <li><b>Custom Emojis:</b> Use the "Insert Custom Emoji" toolbar button after choosing an authoring account. Each emoji keeps its Telegram custom_emoji_id and behaves like a single character inside spintax.</li>
         </ul>
-        
+
         <h4>⚠️ IMPORTANT: Variables vs Spintax</h4>
         <p><b>VARIABLES</b> (for personalization - what you probably want):</p>
         <ul>
@@ -167,6 +635,7 @@ class TemplateDialog(QDialog):
         <li><b>Enable Spintax:</b> Check to enable message variations</li>
         <li><b>Spintax Example:</b> Use {option1|option2|option3} syntax for variations</li>
         <li><b>Example:</b> Hello {friend|buddy|pal}, welcome to {our company|our service}!</li>
+        <li><b>Custom Emojis &amp; Spintax:</b> Keep emoji placeholders consistent across variations so each option keeps a valid custom_emoji_id.</li>
         </ul>
         
         <h4>Tags:</h4>
@@ -204,7 +673,7 @@ class TemplateDialog(QDialog):
     
     def validate_spintax_syntax(self):
         """Validate spintax syntax in the message."""
-        message_text = self.message_edit.toPlainText()
+        message_text = self.message_editor.to_plain_text()
         if not message_text.strip():
             return True
         
@@ -214,7 +683,7 @@ class TemplateDialog(QDialog):
             
             if validation_result["patterns_count"] == 0:
                 # Check if message contains variables but no spintax patterns
-                message_text = self.message_edit.toPlainText()
+                message_text = self.message_editor.to_plain_text()
                 has_variables = any(var in message_text for var in ['{name}', '{email}', '{phone}', '{company}', '{date}', '{time}'])
                 
                 if has_variables:
@@ -264,7 +733,7 @@ class TemplateDialog(QDialog):
     
     def preview_spintax(self):
         """Preview spintax generation."""
-        message_text = self.message_edit.toPlainText()
+        message_text = self.message_editor.to_plain_text()
         if not message_text.strip():
             QMessageBox.warning(self, _("templates.spintax_preview"), _("templates.no_message_text"))
             return
@@ -346,10 +815,13 @@ class TemplateDialog(QDialog):
         
         self.name_edit.setText(self.template.name)
         self.description_edit.setText(self.template.description or "")
-        self.message_edit.setText(self.template.body)
+        spans = []
+        if hasattr(self.template, "entity_spans") and self.template.entity_spans:
+            spans = self.template.entity_spans
+        self.message_editor.set_content(self.template.body or "", spans)
         self.use_spintax_check.setChecked(self.template.use_spintax)
         self.spintax_example_edit.setText(self.template.spintax_text or "")
-        
+
         # Load tags
         if self.template.tags:
             tags_list = self.template.get_tags_list()
@@ -363,7 +835,7 @@ class TemplateDialog(QDialog):
                 QMessageBox.warning(self, _("common.error"), _("templates.name_required"))
                 return
             
-            if not self.message_edit.toPlainText().strip():
+            if not self.message_editor.to_plain_text().strip():
                 QMessageBox.warning(self, _("common.error"), _("templates.message_required"))
                 return
             
@@ -397,7 +869,7 @@ class TemplateDialog(QDialog):
                 # Update existing template
                 self.template.name = self.name_edit.text().strip()
                 self.template.description = self.description_edit.text().strip() or None
-                self.template.body = self.message_edit.toPlainText().strip()
+                self.template.body = self.message_editor.to_plain_text().strip()
                 self.template.use_spintax = self.use_spintax_check.isChecked()
                 self.template.spintax_text = self.spintax_example_edit.text().strip() or None
             else:
@@ -405,10 +877,13 @@ class TemplateDialog(QDialog):
                 self.template = MessageTemplate(
                     name=self.name_edit.text().strip(),
                     description=self.description_edit.text().strip() or None,
-                    body=self.message_edit.toPlainText().strip(),
+                    body=self.message_editor.to_plain_text().strip(),
                     use_spintax=self.use_spintax_check.isChecked(),
                     spintax_text=self.spintax_example_edit.text().strip() or None
                 )
+
+            spans = self.message_editor.get_entity_spans()
+            self.template.entity_spans = spans if spans else None
             
             # Update tags
             tags_text = self.tags_edit.text().strip()
@@ -852,6 +1327,7 @@ class TemplateListWidget(QWidget):
             return
         
         try:
+            import json
             import pandas as pd
             
             # Read CSV file
@@ -893,7 +1369,18 @@ class TemplateListWidget(QWidget):
                         category=row.get('category', 'general'),
                         is_active=row.get('is_active', True)
                     )
-                    
+
+                    if 'entity_spans' in row and pd.notna(row['entity_spans']):
+                        try:
+                            spans_value = row['entity_spans']
+                            if isinstance(spans_value, str):
+                                spans = json.loads(spans_value)
+                            else:
+                                spans = spans_value
+                            template.entity_spans = spans if spans else None
+                        except (TypeError, ValueError, json.JSONDecodeError):
+                            self.logger.warning("Could not parse entity spans from CSV; skipping spans for this row.")
+
                     # Handle tags
                     if 'tags' in row and pd.notna(row['tags']):
                         tags = [tag.strip() for tag in str(row['tags']).split(',') if tag.strip()]
@@ -927,6 +1414,7 @@ class TemplateListWidget(QWidget):
             return
         
         try:
+            import json
             import pandas as pd
             
             # Get all templates
@@ -952,6 +1440,7 @@ class TemplateListWidget(QWidget):
                         'category': template.category,
                         'is_active': template.is_active,
                         'tags': ', '.join(template.get_tags_list()) if template.get_tags_list() else '',
+                        'entity_spans': json.dumps(template.entity_spans) if template.entity_spans else '',
                         'created_at': template.created_at.isoformat() if template.created_at else '',
                         'updated_at': template.updated_at.isoformat() if template.updated_at else ''
                     })

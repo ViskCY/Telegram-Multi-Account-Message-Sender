@@ -49,6 +49,7 @@ class MessageTemplate(BaseModel, SoftDeleteMixin, JSONFieldMixin, table=True):
     # Content
     subject: Optional[str] = Field(default=None)
     body: str
+    entity_spans: Optional[List[Dict[str, Any]]] = Field(default=None, sa_column=JSON)
     media_path: Optional[str] = Field(default=None)
     caption: Optional[str] = Field(default=None)
     
