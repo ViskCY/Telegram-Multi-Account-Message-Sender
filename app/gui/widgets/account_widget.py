@@ -13,6 +13,8 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread, pyqtSlot
 from PyQt5.QtGui import QFont, QIcon, QPalette, QColor
 
+from telethon.errors import SessionPasswordNeededError, PasswordHashInvalidError
+
 from ...models import Account, AccountStatus, ProxyType
 from ...models.base import SoftDeleteMixin
 from ...services import get_logger, get_session
@@ -186,7 +188,7 @@ class TelegramWorker(QThread):
             # Import here to avoid circular imports
             import asyncio
             from telethon import TelegramClient
-            from telethon.errors import SessionPasswordNeededError, PhoneCodeInvalidError, ApiIdInvalidError
+            from telethon.errors import PhoneCodeInvalidError, ApiIdInvalidError
             
             # Validate API credentials
             if not self.api_id or not self.api_hash:
@@ -248,21 +250,28 @@ class TelegramWorker(QThread):
                     self.progress.emit("Verifying code...")
                     try:
                         if self.phone_code_hash:
-                            await client.sign_in(self.phone_number, self.verification_code, phone_code_hash=self.phone_code_hash)
+                            await client.sign_in(
+                                self.phone_number,
+                                self.verification_code,
+                                phone_code_hash=self.phone_code_hash,
+                            )
                         else:
-                            await client.sign_in(self.phone_number, self.verification_code)
-                        
+                            await client.sign_in(
+                                self.phone_number,
+                                self.verification_code,
+                            )
+
                         # Check if 2FA is required
                         if not await client.is_user_authorized():
                             if not self.password:
-                                # Need 2FA password
+                                self.logger.info("2FA password required during authorization")
                                 self.finished.emit("2FA_PASSWORD_REQUIRED", False)
                                 return
-                            else:
-                                # Sign in with 2FA password
-                                self.progress.emit("Verifying 2FA password...")
-                                await client.sign_in(password=self.password)
-                        
+
+                            # Sign in with 2FA password
+                            self.progress.emit("Verifying 2FA password...")
+                            await client.sign_in(password=self.password)
+
                         # Authorization successful
                         self._update_account_status(AccountStatus.ONLINE)
                         self.finished.emit(
@@ -270,7 +279,16 @@ class TelegramWorker(QThread):
                             f"Account is now online and ready for messaging.",
                             True
                         )
-                        
+
+                    except SessionPasswordNeededError:
+                        self.logger.info("2FA password required during authorization")
+                        self.finished.emit("2FA_PASSWORD_REQUIRED", False)
+                        return
+                    except PasswordHashInvalidError:
+                        self.logger.warning("Invalid 2FA password provided")
+                        self._update_account_status(AccountStatus.ERROR)
+                        self.finished.emit("❌ Invalid 2FA password. Please try again.", False)
+                        return
                     except Exception as e:
                         self.logger.error(f"Code verification error: {e}")
                         self._update_account_status(AccountStatus.ERROR)
@@ -1362,9 +1380,10 @@ class AccountListWidget(QWidget):
     def add_account(self):
         """Add new account."""
         dialog = AccountDialog(self)
+        dialog.account_saved.connect(self._handle_account_saved)
         if dialog.exec_() == QDialog.Accepted:
             self.load_accounts()
-    
+
     def edit_account(self):
         """Edit selected account."""
         selected_rows = self.accounts_table.selectionModel().selectedRows()
@@ -1385,8 +1404,15 @@ class AccountListWidget(QWidget):
         
         if account:
             dialog = AccountDialog(self, account)
+            dialog.account_saved.connect(self._handle_account_saved)
             if dialog.exec_() == QDialog.Accepted:
                 self.load_accounts()
+
+    def _handle_account_saved(self, account_id: int):
+        """Refresh list and notify listeners when an account is saved."""
+        self.logger.debug(f"Account saved signal received for ID {account_id}")
+        self.load_accounts()
+        self.account_updated.emit(account_id)
     
     def delete_account(self):
         """Delete selected account."""
