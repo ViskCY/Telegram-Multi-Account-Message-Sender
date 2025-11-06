@@ -286,6 +286,9 @@ class MessageTemplate(BaseModel, SoftDeleteMixin, JSONFieldMixin, table=True):
             "subject": self.subject_span_metadata,
             "body": self.body_span_metadata,
             "caption": self.caption_span_metadata,
+        }
+
+        return parse_span_metadata(metadata_map.get(field_name))
 
     def render_template(self, variables: Dict[str, str]) -> Dict[str, str]:
         """Render template with provided variables."""
@@ -294,7 +297,7 @@ class MessageTemplate(BaseModel, SoftDeleteMixin, JSONFieldMixin, table=True):
             "body": self.get_body_text(),
             "caption": self.get_caption_text() or None,
         }
-        return parse_span_metadata(metadata_map.get(field_name))
+        return rendered
 
     def render_template(
         self,

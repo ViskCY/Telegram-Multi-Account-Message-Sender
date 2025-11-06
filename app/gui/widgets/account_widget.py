@@ -869,9 +869,9 @@ class AccountListWidget(QWidget):
         
         # Accounts table
         self.accounts_table = QTableWidget()
-        self.accounts_table.setColumnCount(8)
+        self.accounts_table.setColumnCount(9)
         self.accounts_table.setHorizontalHeaderLabels([
-            "Name", "Phone", "Status", "Messages Sent", "Success Rate", 
+            "Name", "Phone", "Status", "Premium", "Messages Sent", "Success Rate",
             "Last Activity", "Warmup", "Actions"
         ])
         
@@ -885,6 +885,7 @@ class AccountListWidget(QWidget):
         header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(6, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(7, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(8, QHeaderView.ResizeToContents)
         
         self.accounts_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.accounts_table.setSelectionMode(QTableWidget.SingleSelection)
@@ -978,39 +979,46 @@ class AccountListWidget(QWidget):
                 status_item.setTextAlignment(Qt.AlignCenter)
                 self.accounts_table.setItem(row, 2, status_item)
                 
+                # Premium status
+                premium_text = "⭐ Premium" if account.is_premium else "Standard"
+                premium_item = QTableWidgetItem(premium_text)
+                premium_item.setFlags(premium_item.flags() & ~Qt.ItemIsEditable | Qt.ItemIsSelectable)
+                premium_item.setTextAlignment(Qt.AlignCenter)
+                self.accounts_table.setItem(row, 3, premium_item)
+
                 # Messages sent - Disabled text field
                 messages_item = QTableWidgetItem(str(account.total_messages_sent))
                 messages_item.setFlags(messages_item.flags() & ~Qt.ItemIsEditable | Qt.ItemIsSelectable)
                 messages_item.setTextAlignment(Qt.AlignCenter)
-                self.accounts_table.setItem(row, 3, messages_item)
-                
+                self.accounts_table.setItem(row, 4, messages_item)
+
                 # Success rate - Disabled text field
                 success_rate = account.get_success_rate()
                 success_item = QTableWidgetItem(f"{success_rate:.1f}%")
                 success_item.setFlags(success_item.flags() & ~Qt.ItemIsEditable | Qt.ItemIsSelectable)
                 success_item.setTextAlignment(Qt.AlignCenter)
-                self.accounts_table.setItem(row, 4, success_item)
-                
+                self.accounts_table.setItem(row, 5, success_item)
+
                 # Last activity - Disabled text field
                 last_activity = account.last_activity.strftime("%Y-%m-%d %H:%M") if account.last_activity else "Never"
                 activity_item = QTableWidgetItem(last_activity)
                 activity_item.setFlags(activity_item.flags() & ~Qt.ItemIsEditable | Qt.ItemIsSelectable)
                 activity_item.setTextAlignment(Qt.AlignCenter)
-                self.accounts_table.setItem(row, 5, activity_item)
-                
+                self.accounts_table.setItem(row, 6, activity_item)
+
                 # Warmup status - Disabled text field
                 warmup_status = "Complete" if account.is_warmup_complete() else f"{account.warmup_messages_sent}/{account.warmup_target_messages}"
                 warmup_item = QTableWidgetItem(warmup_status)
                 warmup_item.setFlags(warmup_item.flags() & ~Qt.ItemIsEditable | Qt.ItemIsSelectable)
                 warmup_item.setTextAlignment(Qt.AlignCenter)
-                self.accounts_table.setItem(row, 6, warmup_item)
-                
+                self.accounts_table.setItem(row, 7, warmup_item)
+
                 # Actions - Create action buttons
                 actions_item = QTableWidgetItem("Connect | Test | Authorize")
                 actions_item.setFlags(actions_item.flags() & ~Qt.ItemIsEditable | Qt.ItemIsSelectable)
                 actions_item.setTextAlignment(Qt.AlignCenter)
                 actions_item.setData(Qt.UserRole, account.id)  # Store account ID for actions
-                self.accounts_table.setItem(row, 7, actions_item)
+                self.accounts_table.setItem(row, 8, actions_item)
             
             self.status_label.setText(f"Loaded {len(accounts)} accounts")
             
@@ -1035,7 +1043,7 @@ class AccountListWidget(QWidget):
                 self.accounts_table.setRowHidden(row, False)
             return
         
-        # Filter accounts (exclude Actions column - column 7)
+        # Filter accounts (exclude Actions column)
         for row in range(self.accounts_table.rowCount()):
             should_show = False
             
@@ -1050,7 +1058,7 @@ class AccountListWidget(QWidget):
     
     def on_cell_clicked(self, row, column):
         """Handle cell click events."""
-        if column == 7:  # Actions column
+        if column == self.accounts_table.columnCount() - 1:  # Actions column
             account_id = self.accounts_table.item(row, 0).data(Qt.UserRole)
             if account_id is not None:
                 self.show_action_menu(row, column, account_id)
