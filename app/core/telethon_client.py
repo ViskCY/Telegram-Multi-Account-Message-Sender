@@ -97,7 +97,11 @@ class TelegramClientWrapper:
         try:
             if not self._authorized:
                 # Send code request
-                await self.client.send_code_request(self.account.phone_number)
+                await self.client.send_code_request(
+                    self.account.phone_number,
+                    force_sms=True,
+                    current_number=True,
+                )
                 
                 # Sign in with code
                 await self.client.sign_in(self.account.phone_number, phone_code)
