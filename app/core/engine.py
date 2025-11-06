@@ -3,11 +3,12 @@ Message engine for handling campaign execution.
 """
 
 import asyncio
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Union
 from datetime import datetime
 
 from ..services import get_logger
 from ..models import Campaign, Account, Recipient, SendLog, SendStatus
+from ..utils.text_entities import RenderedMessage
 from .telethon_client import TelegramClientManager
 from .throttler import Throttler
 from .spintax import SpintaxProcessor
@@ -28,8 +29,9 @@ class MessageEngine:
         self, 
         account_id: int, 
         recipient: Recipient, 
-        message_text: str,
-        media_path: Optional[str] = None
+        message_text: Union[str, RenderedMessage],
+        media_path: Optional[str] = None,
+        entities: Optional[List[Any]] = None
     ) -> Dict[str, Any]:
         """Send a single message."""
         try:
@@ -37,18 +39,28 @@ class MessageEngine:
             client = self.client_manager.get_client(account_id)
             if not client or not client.is_ready():
                 return {"success": False, "error": "Account not ready"}
-            
-            # Apply spintax if needed
-            if "{" in message_text and "}" in message_text:
+
+            if isinstance(message_text, RenderedMessage):
+                entities = message_text.entities
+                message_text = message_text.text
+
+            # Apply spintax if needed and entities were not precomputed
+            if (
+                entities is None
+                and isinstance(message_text, str)
+                and "{" in message_text
+                and "}" in message_text
+            ):
                 spintax_result = self.spintax_processor.process(message_text)
                 message_text = spintax_result.text
-            
+
             # Send message
             result = await self.client_manager.send_message(
-                account_id, 
-                recipient.get_identifier(), 
-                message_text, 
-                media_path
+                account_id,
+                recipient.get_identifier(),
+                message_text,
+                media_path,
+                entities=entities,
             )
             
             return result
@@ -128,15 +140,18 @@ class CampaignRunner:
         """Send a campaign message."""
         try:
             # Get message content
-            message_text = campaign.get_effective_message_text(recipient.id)
+            message = campaign.get_effective_message_text(
+                recipient, self.message_engine.spintax_processor
+            )
             media_path = campaign.get_effective_media_path(recipient.id)
-            
+
             # Send message
             result = await self.message_engine.send_message(
                 account.id,
                 recipient,
-                message_text,
-                media_path
+                message.text,
+                media_path,
+                entities=message.entities,
             )
             
             # Log result

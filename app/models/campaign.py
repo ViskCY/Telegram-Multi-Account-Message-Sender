@@ -3,13 +3,22 @@ Campaign model for managing message campaigns.
 """
 
 from datetime import datetime
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, TYPE_CHECKING
 from enum import Enum
 
 from sqlmodel import Field, Relationship
 from sqlalchemy import JSON
 
 from .base import BaseModel, SoftDeleteMixin, JSONFieldMixin
+from app.utils.text_entities import (
+    RenderedMessage,
+    compose_personalized_rich_text,
+    parse_span_metadata,
+)
+
+if TYPE_CHECKING:  # pragma: no cover
+    from app.core.spintax import SpintaxProcessor
+    from .recipient import Recipient
 
 
 class CampaignStatus(str, Enum):
@@ -60,10 +69,12 @@ class Campaign(BaseModel, SoftDeleteMixin, JSONFieldMixin, table=True):
     message_type: MessageType = Field(default=MessageType.TEXT)
     media_path: Optional[str] = Field(default=None)
     caption: Optional[str] = Field(default=None)
+    caption_span_metadata: Optional[str] = Field(default=None, sa_column=JSON)
     
     # Spintax support
     use_spintax: bool = Field(default=False)
     spintax_text: Optional[str] = Field(default=None)
+    message_span_metadata: Optional[str] = Field(default=None, sa_column=JSON)
     
     # A/B Testing
     use_ab_testing: bool = Field(default=False)
@@ -132,12 +143,52 @@ class Campaign(BaseModel, SoftDeleteMixin, JSONFieldMixin, table=True):
         variant_index = recipient_id % len(variants_list)
         return variants_list[variant_index]
     
-    def get_effective_message_text(self, recipient_id: int) -> str:
-        """Get the effective message text for a recipient."""
+    def get_message_span_metadata_list(self) -> List[Dict[str, Any]]:
+        """Return parsed span metadata for the campaign message text."""
+
+        return parse_span_metadata(self.message_span_metadata)
+
+    def get_caption_span_metadata_list(self) -> List[Dict[str, Any]]:
+        """Return parsed span metadata for the campaign caption."""
+
+        return parse_span_metadata(self.caption_span_metadata)
+
+    def get_effective_message_text(
+        self,
+        recipient: Optional["Recipient"] = None,
+        spintax_processor: Optional["SpintaxProcessor"] = None,
+    ) -> RenderedMessage:
+        """Get the composed message text and entities for a recipient."""
+
+        recipient_id = recipient.id if recipient is not None else 0
+
         if self.use_ab_testing:
             variant = self.get_ab_variant(recipient_id)
-            return variant.get("text", self.message_text)
-        return self.message_text
+            base_text = variant.get("text", self.message_text)
+            span_metadata = parse_span_metadata(
+                variant.get("span_metadata") or variant.get("spans")
+            )
+        else:
+            base_text = self.message_text
+            span_metadata = []
+
+        if not span_metadata:
+            span_metadata = self.get_message_span_metadata_list()
+
+        replacements: Dict[str, str] = {}
+        if recipient is not None:
+            replacements["{name}"] = recipient.get_display_name()
+            replacements["{username}"] = recipient.username or ""
+            replacements["{first_name}"] = recipient.first_name or ""
+            replacements["{last_name}"] = recipient.last_name or ""
+
+        return compose_personalized_rich_text(
+            base_text,
+            span_metadata,
+            replacements=replacements,
+            spintax_processor=spintax_processor,
+            use_spintax=self.use_spintax,
+        )
     
     def get_effective_media_path(self, recipient_id: int) -> Optional[str]:
         """Get the effective media path for a recipient."""

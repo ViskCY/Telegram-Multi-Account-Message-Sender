@@ -11,6 +11,7 @@ from dataclasses import dataclass
 @dataclass
 class SpintaxResult:
     """Result of spintax processing."""
+
     text: str
     variables_used: List[str]
     variants_count: int
@@ -22,8 +23,7 @@ class SpintaxProcessor:
     def __init__(self, seed: Optional[int] = None):
         """Initialize spintax processor with optional seed for reproducibility."""
         self.seed = seed
-        if seed is not None:
-            random.seed(seed)
+        self._random = random.Random(seed) if seed is not None else random
     
     def process(self, text: str) -> SpintaxResult:
         """Process spintax text and return result."""
@@ -42,11 +42,18 @@ class SpintaxProcessor:
         
         for pattern in patterns:
             variants = self._extract_variants(pattern)
-            if variants:
-                selected = random.choice(variants)
-                result_text = result_text.replace(pattern, selected, 1)
-                variables_used.extend(variants)
-                total_variants *= len(variants)
+            # Skip placeholders or malformed patterns that do not provide
+            # alternative variants. This preserves literal placeholders such as
+            # ``{name}`` which are later substituted by the personalization
+            # helpers while still handling legitimate spintax blocks that offer
+            # multiple choices.
+            if not variants or len(variants) < 2:
+                continue
+
+            selected = self._random.choice(variants)
+            result_text = result_text.replace(pattern, selected, 1)
+            variables_used.extend(variants)
+            total_variants *= len(variants)
         
         return SpintaxResult(
             text=result_text,
@@ -126,14 +133,20 @@ class SpintaxProcessor:
             if not variants:
                 errors.append(f"Empty spintax pattern: {pattern}")
             elif any(not v.strip() for v in variants):
-                warnings.append(f"Empty variant in pattern: {pattern}")
-        
+                errors.append(f"Empty variant in pattern: {pattern}")
+
         # Check for nested patterns (not supported)
-        for pattern in patterns:
-            content = pattern[1:-1]
-            if '{' in content or '}' in content:
-                warnings.append(f"Nested spintax not supported: {pattern}")
-        
+        nesting_error_reported = False
+        depth = 0
+        for char in text:
+            if char == '{':
+                depth += 1
+                if depth > 1 and not nesting_error_reported:
+                    errors.append("Nested spintax not supported")
+                    nesting_error_reported = True
+            elif char == '}':
+                depth = max(0, depth - 1)
+
         return {
             "valid": len(errors) == 0,
             "errors": errors,

@@ -37,7 +37,7 @@ class TestSpintaxProcessor:
         
         validation = processor.validate_spintax(text)
         assert not validation["valid"]
-        assert len(validation["warnings"]) > 0
+        assert any("Nested spintax" in error for error in validation["errors"])
     
     def test_empty_variants(self):
         """Test empty variants handling."""
@@ -53,10 +53,20 @@ class TestSpintaxProcessor:
         processor = SpintaxProcessor()
         text = "Hello World"
         result = processor.process(text)
-        
+
         assert result.text == "Hello World"
         assert result.variants_count == 1
         assert len(result.variables_used) == 0
+
+    def test_placeholder_is_preserved(self):
+        """Placeholders without variants should remain untouched."""
+        processor = SpintaxProcessor()
+        text = "Hello {name}, welcome {to|into} the platform"
+
+        result = processor.process(text)
+
+        assert "{name}" in result.text
+        assert result.variants_count == 2
     
     def test_preview_samples(self):
         """Test preview samples generation."""

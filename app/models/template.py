@@ -1,6 +1,7 @@
 """Template models for managing message templates."""
 
 from datetime import datetime
+from typing import Dict, List, Optional, Any, TYPE_CHECKING
 from enum import Enum
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -13,6 +14,14 @@ from sqlalchemy import JSON, Column
 from sqlmodel import Field, Relationship
 
 from .base import BaseModel, SoftDeleteMixin, JSONFieldMixin
+from app.utils.text_entities import (
+    RenderedMessage,
+    compose_personalized_rich_text,
+    parse_span_metadata,
+)
+
+if TYPE_CHECKING:  # pragma: no cover
+    from app.core.spintax import SpintaxProcessor
 
 
 class TemplateType(str, Enum):
@@ -55,6 +64,9 @@ class MessageTemplate(BaseModel, SoftDeleteMixin, JSONFieldMixin, table=True):
     entity_spans: Optional[List[Dict[str, Any]]] = Field(default=None, sa_column=JSON)
     media_path: Optional[str] = Field(default=None)
     caption: Optional[str] = Field(default=None)
+    subject_span_metadata: Optional[str] = Field(default=None, sa_column=JSON)
+    body_span_metadata: Optional[str] = Field(default=None, sa_column=JSON)
+    caption_span_metadata: Optional[str] = Field(default=None, sa_column=JSON)
     rich_body: Optional[List[Dict[str, Any]]] = Field(
         default=None,
         sa_column=Column(JSON, nullable=True),
@@ -267,6 +279,14 @@ class MessageTemplate(BaseModel, SoftDeleteMixin, JSONFieldMixin, table=True):
             self.variables.remove(variable)
             self.variable_descriptions.pop(variable, None)
     
+    def _get_span_metadata(self, field_name: str) -> List[Dict[str, Any]]:
+        """Return parsed span metadata for the given field."""
+
+        metadata_map = {
+            "subject": self.subject_span_metadata,
+            "body": self.body_span_metadata,
+            "caption": self.caption_span_metadata,
+
     def render_template(self, variables: Dict[str, str]) -> Dict[str, str]:
         """Render template with provided variables."""
         rendered = {
@@ -274,14 +294,29 @@ class MessageTemplate(BaseModel, SoftDeleteMixin, JSONFieldMixin, table=True):
             "body": self.get_body_text(),
             "caption": self.get_caption_text() or None,
         }
-        
-        # Replace variables in text fields
+        return parse_span_metadata(metadata_map.get(field_name))
+
+    def render_template(
+        self,
+        variables: Dict[str, str],
+        spintax_processor: Optional["SpintaxProcessor"] = None,
+    ) -> Dict[str, RenderedMessage]:
+        """Render template with provided variables returning text and entities."""
+
+        replacements = {f"{{{{{var}}}}}": str(value) for var, value in variables.items()}
+        rendered: Dict[str, RenderedMessage] = {}
+
         for field in ["subject", "body", "caption"]:
-            if rendered[field]:
-                for var, value in variables.items():
-                    placeholder = f"{{{{{var}}}}}"
-                    rendered[field] = rendered[field].replace(placeholder, str(value))
-        
+            text_value = getattr(self, field) or ""
+            span_metadata = self._get_span_metadata(field)
+            rendered[field] = compose_personalized_rich_text(
+                text_value,
+                span_metadata,
+                replacements=replacements,
+                spintax_processor=spintax_processor,
+                use_spintax=self.use_spintax,
+            )
+
         return rendered
     
     def validate_variables(self, variables: Dict[str, str]) -> List[str]:

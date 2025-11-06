@@ -9,6 +9,7 @@ from typing import Dict, List, Optional, Any
 from PyQt5.QtCore import QObject, pyqtSignal, QTimer
 
 from ..models import Campaign, CampaignStatus, Account, Recipient, SendLog, SendStatus
+from ..utils.text_entities import RenderedMessage
 from ..services import get_logger, get_session
 from ..core.engine import MessageEngine, CampaignRunner
 from ..core.telethon_client import TelegramClientManager
@@ -550,11 +551,13 @@ class CampaignManager(QObject):
                             continue
                         
                         # Prepare message
-                        message_text = self._prepare_message(campaign, recipient)
+                        message = self._prepare_message(campaign, recipient)
                         media_path = campaign.get_effective_media_path(recipient.id)
-                        
+
                         # Send message
-                        result = await self._send_message(account, recipient, message_text, media_path)
+                        result = await self._send_message(
+                            account, recipient, message, media_path
+                        )
                         
                         # Update counts and tracking
                         if result["success"]:
@@ -663,26 +666,28 @@ class CampaignManager(QObject):
         # Could be enhanced with weighted selection, random selection, etc.
         return accounts[0]  # For now, just return the first available account
     
-    def _prepare_message(self, campaign: Campaign, recipient: Recipient) -> str:
-        """Prepare message text for sending."""
-        message_text = campaign.get_effective_message_text(recipient.id)
-        
-        # Apply spintax if enabled
-        if campaign.use_spintax and message_text:
-            try:
-                spintax_result = self.spintax_processor.process(message_text)
-                message_text = spintax_result.text
-                self.logger.debug(f"Spintax processed: '{message_text}'")
-            except Exception as e:
-                self.logger.warning(f"Error processing spintax: {e}")
-        
-        # Apply basic personalization
-        message_text = message_text.replace("{name}", recipient.get_display_name())
-        message_text = message_text.replace("{username}", recipient.username or "")
-        
-        return message_text
+    def _prepare_message(self, campaign: Campaign, recipient: Recipient) -> RenderedMessage:
+        """Prepare message text and entities for sending."""
+
+        message = campaign.get_effective_message_text(
+            recipient, self.spintax_processor
+        )
+
+        self.logger.debug(
+            "Prepared message for %s with %d entities",
+            recipient.get_display_name(),
+            len(message.entities),
+        )
+
+        return message
     
-    async def _send_message(self, account: Account, recipient: Recipient, message_text: str, media_path: Optional[str]) -> Dict[str, Any]:
+    async def _send_message(
+        self,
+        account: Account,
+        recipient: Recipient,
+        message: RenderedMessage,
+        media_path: Optional[str],
+    ) -> Dict[str, Any]:
         """Send a message using a fresh client to avoid event loop conflicts."""
         try:
             self.logger.debug(f"Creating fresh client for account {account.id}")
@@ -729,20 +734,23 @@ class CampaignManager(QObject):
                     sent_message = await client.send_file(
                         entity,
                         media_path,
-                        caption=message_text
+                        caption=message.text,
+                        caption_entities=message.entities,
                     )
                 elif media_path and (media_path.startswith('http://') or media_path.startswith('https://')):
                     # Send URL as media
                     sent_message = await client.send_file(
                         entity,
                         media_path,
-                        caption=message_text
+                        caption=message.text,
+                        caption_entities=message.entities,
                     )
                 else:
                     # Send text only
                     sent_message = await client.send_message(
                         entity,
-                        message_text
+                        message.text,
+                        entities=message.entities,
                     )
                 
                 await client.disconnect()
