@@ -70,6 +70,7 @@ class Account(BaseModel, SoftDeleteMixin, JSONFieldMixin, table=True):
     
     # Additional settings
     is_active: bool = Field(default=True)
+    is_premium: bool = Field(default=False)
     notes: Optional[str] = Field(default=None)
     tags: Optional[str] = Field(default=None, sa_column=JSON)
     

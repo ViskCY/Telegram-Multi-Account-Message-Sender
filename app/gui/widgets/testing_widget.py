@@ -366,8 +366,13 @@ class TestingWidget(QWidget):
                 self.account_combo.clear()
                 self.logger.info(f"Loading {len(accounts)} accounts for testing")
                 for account in accounts:
-                    status_icon = "🟢" if account.status == "ONLINE" else "🔴"
-                    self.account_combo.addItem(f"{status_icon} {account.phone_number}", account.id)
+                    status = getattr(account.status, "value", account.status)
+                    status_icon = "🟢" if str(status).upper() == "ONLINE" else "🔴"
+                    premium_icon = " ⭐" if getattr(account, "is_premium", False) else ""
+                    self.account_combo.addItem(
+                        f"{status_icon} {account.phone_number}{premium_icon}",
+                        account.id,
+                    )
                     self.logger.debug(f"Added account: {account.phone_number} (ID: {account.id})")
                 
                 # Load recipients

@@ -439,7 +439,8 @@ class TemplateDialog(QDialog):
         self.account_combo.setEnabled(True)
         for account in accounts:
             self._account_lookup[account.id] = account
-            self.account_combo.addItem(account.name, account.id)
+            display_name = f"{account.name}{' ⭐' if account.is_premium else ''}"
+            self.account_combo.addItem(display_name, account.id)
 
         if self.account_combo.count() > 1:
             self.account_combo.setCurrentIndex(1)
