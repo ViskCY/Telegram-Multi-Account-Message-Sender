@@ -439,7 +439,8 @@ class TemplateDialog(QDialog):
         self.account_combo.setEnabled(True)
         for account in accounts:
             self._account_lookup[account.id] = account
-            self.account_combo.addItem(account.name, account.id)
+            display_name = f"{account.name}{' ⭐' if account.is_premium else ''}"
+            self.account_combo.addItem(display_name, account.id)
 
         if self.account_combo.count() > 1:
             self.account_combo.setCurrentIndex(1)
@@ -836,7 +837,10 @@ class TemplateDialog(QDialog):
                 QMessageBox.warning(self, _("common.error"), _("templates.name_required"))
                 return
             
-            if not self.message_editor.to_plain_text().strip():
+            message_body = self.message_editor.to_plain_text()
+            message_body_stripped = message_body.strip()
+
+            if not message_body_stripped:
                 QMessageBox.warning(self, _("common.error"), _("templates.message_required"))
                 return
 
@@ -892,7 +896,7 @@ class TemplateDialog(QDialog):
                 # Update existing template
                 self.template.name = self.name_edit.text().strip()
                 self.template.description = self.description_edit.text().strip() or None
-                self.template.body = self.message_editor.to_plain_text().strip()
+                self.template.body = message_body_stripped
                 self.template.use_spintax = self.use_spintax_check.isChecked()
                 self.template.spintax_text = self.spintax_example_edit.text().strip() or None
             else:
@@ -900,7 +904,7 @@ class TemplateDialog(QDialog):
                 self.template = MessageTemplate(
                     name=self.name_edit.text().strip(),
                     description=self.description_edit.text().strip() or None,
-                    body=self.message_editor.to_plain_text().strip(),
+                    body=message_body_stripped,
                     use_spintax=self.use_spintax_check.isChecked(),
                     spintax_text=self.spintax_example_edit.text().strip() or None
                 )

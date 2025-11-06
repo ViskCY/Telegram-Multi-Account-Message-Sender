@@ -18,6 +18,7 @@ from telethon.errors import (
     HashInvalidError
 )
 
+from ..services import get_session
 from ..services.logger import get_logger
 from ..models import Account, AccountStatus
 from .custom_emoji_service import get_custom_emoji_service
@@ -56,13 +57,16 @@ class TelegramClientWrapper:
             
             # Check authorization
             self._authorized = await self.client.is_user_authorized()
-            
+
             self.logger.log_telegram_event(
-                "connect", 
-                self.account.id, 
+                "connect",
+                self.account.id,
                 f"Connected successfully. Authorized: {self._authorized}"
             )
-            
+
+            if self._authorized:
+                await self._sync_premium_status()
+
             return True
             
         except Exception as e:
@@ -109,8 +113,9 @@ class TelegramClientWrapper:
                 self.account.status = AccountStatus.ONLINE
                 self.account.last_login = datetime.utcnow()
                 self.account.error_message = None
-                
+
                 self.logger.log_telegram_event("authorize", self.account.id, "Authorization successful")
+                await self._sync_premium_status()
                 return True
             
             return True
@@ -240,16 +245,63 @@ class TelegramClientWrapper:
         
         try:
             me = await self.client.get_me()
+            await self._sync_premium_status(me)
             return {
                 "id": me.id,
                 "username": me.username,
                 "first_name": me.first_name,
                 "last_name": me.last_name,
-                "phone": me.phone
+                "phone": me.phone,
+                "premium": bool(getattr(me, "premium", False)),
             }
         except Exception as e:
             self.logger.error(f"Failed to get user info for account {self.account.id}: {e}")
             return None
+
+    async def _sync_premium_status(self, me: Optional[Any] = None) -> None:
+        """Ensure the account's premium flag matches Telegram's state."""
+        if not self.client or not self._connected or not self._authorized:
+            return
+
+        if me is None:
+            try:
+                me = await self.client.get_me()
+            except Exception as exc:  # pragma: no cover - defensive log path
+                self.logger.warning(
+                    f"Unable to retrieve premium status for account {self.account.id}: {exc}"
+                )
+                return
+
+        premium = bool(getattr(me, "premium", False))
+        if self.account.is_premium == premium:
+            return
+
+        self.account.is_premium = premium
+
+        session = None
+        try:
+            session = get_session()
+            db_account = session.get(Account, self.account.id)
+            if db_account is None:
+                self.logger.warning(
+                    "Account %s not found when updating premium status", self.account.id
+                )
+                return
+
+            db_account.is_premium = premium
+            session.add(db_account)
+            session.commit()
+        except Exception as exc:  # pragma: no cover - defensive log path
+            if session is not None:
+                session.rollback()
+            self.logger.error(
+                "Failed to persist premium status for account %s: %s",
+                self.account.id,
+                exc,
+            )
+        finally:
+            if session is not None:
+                session.close()
     
     def is_ready(self) -> bool:
         """Check if client is ready for sending."""
