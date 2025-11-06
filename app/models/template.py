@@ -1,13 +1,16 @@
-"""
-Template models for managing message templates.
-"""
+"""Template models for managing message templates."""
 
 from datetime import datetime
-from typing import Dict, List, Optional, Any
 from enum import Enum
+from typing import Any, Dict, Iterable, List, Optional
 
+try:
+    from pydantic import model_validator
+except ImportError:  # Pydantic v1 fallback
+    model_validator = None  # type: ignore
+    from pydantic import root_validator
+from sqlalchemy import JSON, Column
 from sqlmodel import Field, Relationship
-from sqlalchemy import JSON
 
 from .base import BaseModel, SoftDeleteMixin, JSONFieldMixin
 
@@ -52,6 +55,16 @@ class MessageTemplate(BaseModel, SoftDeleteMixin, JSONFieldMixin, table=True):
     entity_spans: Optional[List[Dict[str, Any]]] = Field(default=None, sa_column=JSON)
     media_path: Optional[str] = Field(default=None)
     caption: Optional[str] = Field(default=None)
+    rich_body: Optional[List[Dict[str, Any]]] = Field(
+        default=None,
+        sa_column=Column(JSON, nullable=True),
+        description="Ordered spans describing the template body",
+    )
+    rich_caption: Optional[List[Dict[str, Any]]] = Field(
+        default=None,
+        sa_column=Column(JSON, nullable=True),
+        description="Ordered spans describing the template caption",
+    )
     
     # Variables and personalization
     variables: Optional[str] = Field(default=None, sa_column=JSON)
@@ -80,6 +93,163 @@ class MessageTemplate(BaseModel, SoftDeleteMixin, JSONFieldMixin, table=True):
     # Relationships
     # campaigns: List["Campaign"] = Relationship(back_populates="template")
     
+    _SPAN_FLAGS = (
+        "bold",
+        "italic",
+        "underline",
+        "strikethrough",
+        "code",
+        "spoiler",
+    )
+
+    @classmethod
+    def _default_span(cls, fallback_text: str = "", emoji_id: Optional[str] = None) -> Dict[str, Any]:
+        """Create a default rich text span."""
+        span: Dict[str, Any] = {
+            "emoji_id": emoji_id,
+            "fallback_text": fallback_text,
+            "link": None,
+        }
+        for flag in cls._SPAN_FLAGS:
+            span[flag] = False
+        return span
+
+    @classmethod
+    def _normalize_spans(cls, spans: Optional[Iterable[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+        """Normalize spans ensuring required keys exist and order is preserved."""
+        if not spans:
+            return []
+
+        normalized: List[Dict[str, Any]] = []
+        for span in spans:
+            if not isinstance(span, dict):
+                continue
+            normalized_span = cls._default_span()
+            normalized_span.update(span)
+            fallback = normalized_span.get("fallback_text")
+            if fallback is None:
+                fallback = span.get("text", "")  # Legacy compatibility
+            normalized_span["fallback_text"] = fallback or ""
+            normalized.append(normalized_span)
+        return normalized
+
+    @classmethod
+    def _spans_from_plain_text(cls, text: Optional[str]) -> List[Dict[str, Any]]:
+        """Create a single-span representation from plain text."""
+        if not text:
+            return []
+        return [cls._default_span(fallback_text=text)]
+
+    @staticmethod
+    def _spans_to_plain_text(spans: Optional[Iterable[Dict[str, Any]]]) -> str:
+        """Concatenate fallback text from spans into a plain string."""
+        if not spans:
+            return ""
+        return "".join(str(span.get("fallback_text", "")) for span in spans)
+
+    def _ensure_rich_body(self) -> None:
+        """Synchronize body text and rich span data."""
+        if self.rich_body:
+            normalized = self._normalize_spans(self.rich_body)
+            self.rich_body = normalized or None
+            self.body = self._spans_to_plain_text(normalized)
+        else:
+            spans = self._spans_from_plain_text(self.body)
+            self.rich_body = spans or None
+
+    def _ensure_rich_caption(self) -> None:
+        """Synchronize caption text and rich span data."""
+        if self.rich_caption:
+            normalized = self._normalize_spans(self.rich_caption)
+            self.rich_caption = normalized or None
+            if normalized:
+                text = self._spans_to_plain_text(normalized)
+                self.caption = text or None
+        elif self.caption:
+            spans = self._spans_from_plain_text(self.caption)
+            self.rich_caption = spans or None
+
+    if model_validator is not None:
+
+        @model_validator(mode="after")
+        def _sync_rich_fields(self) -> "MessageTemplate":
+            """Ensure rich content stays synchronized with plain text fields."""
+            self._ensure_rich_body()
+            self._ensure_rich_caption()
+            return self
+
+    else:  # Pydantic v1 fallback
+
+        @root_validator(pre=False)
+        def _sync_rich_fields(cls, values: Dict[str, Any]) -> Dict[str, Any]:
+            """Synchronize rich text structures when loading/saving models."""
+            body = values.get("body")
+            rich_body = values.get("rich_body")
+            if rich_body:
+                normalized = cls._normalize_spans(rich_body)
+                values["rich_body"] = normalized or None
+                values["body"] = cls._spans_to_plain_text(normalized) or body
+            else:
+                spans = cls._spans_from_plain_text(body)
+                values["rich_body"] = spans or None
+
+            caption = values.get("caption")
+            rich_caption = values.get("rich_caption")
+            if rich_caption:
+                normalized_caption = cls._normalize_spans(rich_caption)
+                values["rich_caption"] = normalized_caption or None
+                if normalized_caption:
+                    values["caption"] = cls._spans_to_plain_text(normalized_caption)
+            elif caption:
+                spans = cls._spans_from_plain_text(caption)
+                values["rich_caption"] = spans or None
+
+            return values
+
+    def get_body_spans(self) -> List[Dict[str, Any]]:
+        """Return the body as structured rich text spans."""
+        self._ensure_rich_body()
+        return list(self.rich_body or [])
+
+    def set_body_spans(self, spans: Iterable[Dict[str, Any]]) -> None:
+        """Set the body using structured rich text spans."""
+        normalized = self._normalize_spans(spans)
+        self.rich_body = normalized or None
+        self.body = self._spans_to_plain_text(normalized)
+
+    def get_body_text(self) -> str:
+        """Return the body as plain text."""
+        self._ensure_rich_body()
+        return self.body or ""
+
+    def set_body_text(self, text: str) -> None:
+        """Set the body as plain text while keeping rich data synced."""
+        self.body = text or ""
+        spans = self._spans_from_plain_text(self.body)
+        self.rich_body = spans or None
+
+    def get_caption_spans(self) -> List[Dict[str, Any]]:
+        """Return the caption as structured rich text spans."""
+        self._ensure_rich_caption()
+        return list(self.rich_caption or [])
+
+    def set_caption_spans(self, spans: Iterable[Dict[str, Any]]) -> None:
+        """Set the caption using structured rich text spans."""
+        normalized = self._normalize_spans(spans)
+        self.rich_caption = normalized or None
+        self.caption = self._spans_to_plain_text(normalized) or None
+
+    def get_caption_text(self) -> str:
+        """Return the caption as plain text."""
+        self._ensure_rich_caption()
+        return self.caption or ""
+
+    def set_caption_text(self, text: Optional[str]) -> None:
+        """Set the caption as plain text while keeping rich data synced."""
+        self.caption = text or None
+        spans = self._spans_from_plain_text(self.caption)
+        self.rich_caption = spans or None
+
     def get_available_variables(self) -> List[str]:
         """Get list of available variables in the template."""
         return self.variables.copy()
@@ -101,8 +271,8 @@ class MessageTemplate(BaseModel, SoftDeleteMixin, JSONFieldMixin, table=True):
         """Render template with provided variables."""
         rendered = {
             "subject": self.subject,
-            "body": self.body,
-            "caption": self.caption,
+            "body": self.get_body_text(),
+            "caption": self.get_caption_text() or None,
         }
         
         # Replace variables in text fields
@@ -124,7 +294,7 @@ class MessageTemplate(BaseModel, SoftDeleteMixin, JSONFieldMixin, table=True):
     
     def get_preview_text(self, max_length: int = 100) -> str:
         """Get preview text for the template."""
-        preview = self.body or ""
+        preview = self.get_body_text()
         if len(preview) > max_length:
             preview = preview[:max_length] + "..."
         return preview
@@ -162,11 +332,11 @@ class MessageTemplate(BaseModel, SoftDeleteMixin, JSONFieldMixin, table=True):
         if not self.use_ab_testing or not self.ab_variants:
             return {
                 "subject": self.subject,
-                "body": self.body,
+                "body": self.get_body_text(),
                 "media_path": self.media_path,
-                "caption": self.caption,
+                "caption": self.get_caption_text() or None,
             }
-        
+
         # Simple round-robin assignment based on recipient_id
         variant_index = recipient_id % len(self.ab_variants)
         return self.ab_variants[variant_index]
@@ -174,7 +344,7 @@ class MessageTemplate(BaseModel, SoftDeleteMixin, JSONFieldMixin, table=True):
     def is_usable(self) -> bool:
         """Check if template can be used."""
         return (
-            self.is_active and
-            not self.is_deleted and
-            bool(self.body.strip())
+            self.is_active
+            and not self.is_deleted
+            and bool(self.get_body_text().strip())
         )

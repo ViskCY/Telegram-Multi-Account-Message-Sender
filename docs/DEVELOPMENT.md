@@ -413,6 +413,28 @@ pydoc -w app.services
 5. **Response**: Results returned to GUI
 6. **UI Update**: GUI updates with results
 
+### Custom Emoji Integration
+
+The `CustomEmojiService` in `app/core/custom_emoji_service.py` centralizes custom emoji
+support for both the GUI and the sending pipeline.
+
+- **Placeholder Syntax** – Templates can embed custom emojis with the
+  `[emoji:<document_id>]` marker. Each placeholder is resolved to a
+  `MessageEntityCustomEmoji` before the message is sent.
+- **Per-Account Cache** – Metadata is cached per Telegram account for one hour by
+  default. The cache is hydrated via `messages.GetCustomEmojiDocuments`, so each
+  account must remain authorized for lookups to succeed.
+- **Validation on Save** – When a template is saved, the dialog checks that every
+  referenced emoji exists on at least one configured account and surfaces warnings
+  if none are found. This prevents using emojis that are missing or account-
+  specific.
+- **Premium Requirement** – Telegram only delivers custom emoji metadata for
+  premium-enabled accounts. If no active accounts expose the emoji, the UI warns
+  the editor and sending falls back to a textual placeholder.
+- **Fallback Rendering** – When metadata is unavailable at send time, the
+  placeholder is replaced with `:emoji-<document_id>:` so recipients can still
+  infer the intent without the premium emoji.
+
 ## Database Schema
 
 ### Entity Relationships

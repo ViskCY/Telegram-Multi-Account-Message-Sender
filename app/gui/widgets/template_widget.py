@@ -26,7 +26,7 @@ from ...models.account import Account
 from ...services import get_logger
 from ...services.db import get_session
 from ...services.translation import _, get_translation_manager
-from ...core import SpintaxProcessor
+from ...core import SpintaxProcessor, get_custom_emoji_service
 from telethon import TelegramClient, functions, types
 from sqlmodel import select
 
@@ -289,6 +289,7 @@ class TemplateDialog(QDialog):
         self.spintax_processor = SpintaxProcessor()
         self._emoji_cache: Dict[int, List[Dict[str, Any]]] = {}
         self._account_lookup: Dict[int, Account] = {}
+        self.custom_emoji_service = get_custom_emoji_service()
         self.setup_ui()
 
         if template:
@@ -838,7 +839,29 @@ class TemplateDialog(QDialog):
             if not self.message_editor.to_plain_text().strip():
                 QMessageBox.warning(self, _("common.error"), _("templates.message_required"))
                 return
-            
+
+            # Validate custom emoji references
+            emoji_ids = self.custom_emoji_service.extract_custom_emoji_ids(message_body)
+            if emoji_ids:
+                validation = self.custom_emoji_service.validate_custom_emoji_ids(emoji_ids)
+
+                if not validation.accounts_checked:
+                    QMessageBox.warning(
+                        self,
+                        "Custom Emoji Warning",
+                        "No active Telegram accounts could be checked for custom emojis. The template will be saved, "
+                        "but sending may fail if the emojis are unavailable.",
+                    )
+                elif validation.missing_ids:
+                    missing_ids = ", ".join(str(eid) for eid in sorted(validation.missing_ids))
+                    QMessageBox.warning(
+                        self,
+                        "Custom Emoji Warning",
+                        "The template references custom emoji IDs that are not available on any configured account:\n"
+                        f"Missing IDs: {missing_ids}\n\nPlease update the template or upload the emojis before saving.",
+                    )
+                    return
+
             # Validate spintax if enabled
             if self.use_spintax_check.isChecked():
                 if not self.validate_spintax_syntax():
