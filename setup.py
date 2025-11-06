@@ -3,8 +3,39 @@
 Setup script for Telegram Multi-Account Message Sender.
 """
 
-from setuptools import setup, find_packages
+from importlib import util as importlib_util
 from pathlib import Path
+
+_setuptools_spec = importlib_util.find_spec("setuptools")
+if _setuptools_spec is None:
+    import ensurepip
+    import subprocess
+    import sys
+
+    ensurepip.bootstrap()
+    subprocess.check_call(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--upgrade",
+            "setuptools",
+            "wheel",
+        ]
+    )
+    _setuptools_spec = importlib_util.find_spec("setuptools")
+
+if _setuptools_spec is None or _setuptools_spec.loader is None:
+    raise ModuleNotFoundError(
+        "setuptools is required to install Telegram Multi-Account Message Sender."
+    )
+
+setuptools = importlib_util.module_from_spec(_setuptools_spec)
+_setuptools_spec.loader.exec_module(setuptools)
+
+setup = setuptools.setup
+find_packages = setuptools.find_packages
 
 # Read the README file
 this_directory = Path(__file__).parent
