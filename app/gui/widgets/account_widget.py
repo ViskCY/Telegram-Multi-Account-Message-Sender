@@ -2,6 +2,7 @@
 Account management widgets.
 """
 
+import json
 from typing import Optional, List, Dict, Any
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
@@ -14,6 +15,7 @@ from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread, pyqtSlot
 from PyQt5.QtGui import QFont, QIcon, QPalette, QColor
 
 from telethon.errors import SessionPasswordNeededError, PasswordHashInvalidError
+from telethon.tl import types as tl_types
 
 from ...models import Account, AccountStatus, ProxyType
 from ...models.base import SoftDeleteMixin
@@ -67,10 +69,11 @@ class ProgressDialog(QDialog):
 
 class VerificationCodeDialog(QDialog):
     """Dialog for entering Telegram verification code."""
-    
-    def __init__(self, parent=None, phone_number=""):
+
+    def __init__(self, parent=None, phone_number: str = "", delivery_hint: Optional[str] = None):
         super().__init__(parent)
         self.phone_number = phone_number
+        self.delivery_hint = delivery_hint
         self.setup_ui()
     
     def setup_ui(self):
@@ -97,7 +100,13 @@ class VerificationCodeDialog(QDialog):
         self.code_edit.textChanged.connect(self.on_code_changed)
         code_layout.addWidget(self.code_edit)
         layout.addLayout(code_layout)
-        
+
+        if self.delivery_hint:
+            hint_label = QLabel(self.delivery_hint)
+            hint_label.setWordWrap(True)
+            hint_label.setStyleSheet("color: #888888; margin-top: 4px;")
+            layout.addWidget(hint_label)
+
         # Password hint (if needed)
         self.password_hint = QLabel("If you have 2FA enabled, you'll be prompted for your password next.")
         self.password_hint.setStyleSheet("color: #888888; font-style: italic; margin-top: 10px;")
@@ -228,25 +237,46 @@ class TelegramWorker(QThread):
         """Async authorization logic."""
         try:
             await client.connect()
-            
+
             if self._should_stop:
                 await client.disconnect()
                 return
-            
+
             if not await client.is_user_authorized():
                 if not self.verification_code:
                     # First step: send verification code
                     self.progress.emit("Sending verification code...")
-                    result = await client.send_code_request(self.phone_number)
+                    result = await client.send_code_request(
+                        self.phone_number,
+                        force_sms=True,
+                        current_number=True,
+                    )
 
                     # Store the phone code hash so it can be reused if needed (e.g. for 2FA)
                     self.phone_code_hash = result.phone_code_hash
-                    
+
                     # Update account status to CONNECTING
                     self._update_account_status(AccountStatus.CONNECTING)
-                    
-                    # Emit signal that code is required with phone_code_hash
-                    self.code_required.emit(f"{self.phone_number}|{result.phone_code_hash}")
+
+                    delivery_hint = self._get_delivery_hint(result)
+                    self.progress.emit(delivery_hint)
+
+                    # Emit signal that code is required with additional context
+                    payload = json.dumps(
+                        {
+                            "phone": self.phone_number,
+                            "phone_code_hash": result.phone_code_hash,
+                            "delivery_hint": delivery_hint,
+                        }
+                    )
+                    self.code_required.emit(payload)
+
+                    try:
+                        await client.disconnect()
+                    except Exception as disconnect_error:
+                        self.logger.warning(
+                            f"Error disconnecting after requesting verification code: {disconnect_error}"
+                        )
                     return
                 else:
                     # Second step: verify code
@@ -309,12 +339,31 @@ class TelegramWorker(QThread):
             else:
                 self._update_account_status(AccountStatus.ONLINE)
                 self.finished.emit(f"✅ Account {self.account_name} is already authorized!", True)
-            
+
             await client.disconnect()
-            
+
         except Exception as e:
             self.logger.error(f"Async authorization error: {e}")
             self.finished.emit(f"❌ Authorization failed: {str(e)}", False)
+
+    def _get_delivery_hint(self, sent_code) -> str:
+        """Provide user-friendly hint about where the verification code was sent."""
+        code_type = getattr(sent_code, "type", None)
+
+        if isinstance(code_type, tl_types.auth.SentCodeTypeSms):
+            return "Verification code sent via SMS. Please check your text messages."
+        if isinstance(code_type, tl_types.auth.SentCodeTypeApp):
+            return "Verification code sent to your Telegram app. Check your logged-in devices."
+        if isinstance(code_type, tl_types.auth.SentCodeTypeCall):
+            return "You will receive an automated call with the verification code."
+        if isinstance(code_type, tl_types.auth.SentCodeTypeFlashCall):
+            return "Telegram will place a flash call. The last digits of the incoming number are your code."
+        if isinstance(code_type, tl_types.auth.SentCodeTypeFragmentSms):
+            return "Verification code sent via SMS through Telegram's fragment service."
+        if isinstance(code_type, tl_types.auth.SentCodeTypeEmailCode):
+            return "Verification code sent to your email address."
+
+        return "Verification code requested. Please check your Telegram account or associated devices."
     
     def _test_account(self):
         """Test account connection."""
@@ -1232,15 +1281,25 @@ class AccountListWidget(QWidget):
         """Handle when verification code is required."""
         progress_dialog.close()
         
-        # Parse phone_number and phone_code_hash from the signal data
-        if "|" in phone_data:
-            phone_number, phone_code_hash = phone_data.split("|", 1)
-        else:
-            phone_number = phone_data
-            phone_code_hash = None
-        
+        # Parse phone_number, phone_code_hash, and optional delivery hint from the signal data
+        delivery_hint = None
+        phone_code_hash = None
+        phone_number = ""
+
+        try:
+            payload = json.loads(phone_data)
+            phone_number = payload.get("phone") or payload.get("phone_number") or ""
+            phone_code_hash = payload.get("phone_code_hash")
+            delivery_hint = payload.get("delivery_hint")
+        except (TypeError, json.JSONDecodeError):
+            if "|" in phone_data:
+                phone_number, phone_code_hash = phone_data.split("|", 1)
+            else:
+                phone_number = phone_data
+                phone_code_hash = None
+
         # Show verification code dialog
-        code_dialog = VerificationCodeDialog(self, phone_number)
+        code_dialog = VerificationCodeDialog(self, phone_number, delivery_hint)
         if code_dialog.exec_() == QDialog.Accepted:
             code = code_dialog.get_code()
             if code:
