@@ -61,12 +61,20 @@ class MessageTemplate(BaseModel, SoftDeleteMixin, JSONFieldMixin, table=True):
     # Content
     subject: Optional[str] = Field(default=None)
     body: str
-    entity_spans: Optional[List[Dict[str, Any]]] = Field(default=None, sa_column=JSON)
+    entity_spans: Optional[List[Dict[str, Any]]] = Field(
+        default=None, sa_column=Column(JSON, nullable=True)
+    )
     media_path: Optional[str] = Field(default=None)
     caption: Optional[str] = Field(default=None)
-    subject_span_metadata: Optional[str] = Field(default=None, sa_column=JSON)
-    body_span_metadata: Optional[str] = Field(default=None, sa_column=JSON)
-    caption_span_metadata: Optional[str] = Field(default=None, sa_column=JSON)
+    subject_span_metadata: Optional[str] = Field(
+        default=None, sa_column=Column(JSON, nullable=True)
+    )
+    body_span_metadata: Optional[str] = Field(
+        default=None, sa_column=Column(JSON, nullable=True)
+    )
+    caption_span_metadata: Optional[str] = Field(
+        default=None, sa_column=Column(JSON, nullable=True)
+    )
     rich_body: Optional[List[Dict[str, Any]]] = Field(
         default=None,
         sa_column=Column(JSON, nullable=True),
@@ -79,17 +87,25 @@ class MessageTemplate(BaseModel, SoftDeleteMixin, JSONFieldMixin, table=True):
     )
     
     # Variables and personalization
-    variables: Optional[str] = Field(default=None, sa_column=JSON)
-    variable_descriptions: Optional[str] = Field(default=None, sa_column=JSON)
+    variables: Optional[str] = Field(
+        default=None, sa_column=Column(JSON, nullable=True)
+    )
+    variable_descriptions: Optional[str] = Field(
+        default=None, sa_column=Column(JSON, nullable=True)
+    )
     use_spintax: bool = Field(default=False)
     spintax_text: Optional[str] = Field(default=None)
     
     # A/B Testing
     use_ab_testing: bool = Field(default=False)
-    ab_variants: Optional[str] = Field(default=None, sa_column=JSON)
+    ab_variants: Optional[str] = Field(
+        default=None, sa_column=Column(JSON, nullable=True)
+    )
     
     # Organization
-    tags: Optional[str] = Field(default=None, sa_column=JSON)
+    tags: Optional[str] = Field(
+        default=None, sa_column=Column(JSON, nullable=True)
+    )
     notes: Optional[str] = Field(default=None)
     
     # Usage statistics
@@ -286,13 +302,6 @@ class MessageTemplate(BaseModel, SoftDeleteMixin, JSONFieldMixin, table=True):
             "subject": self.subject_span_metadata,
             "body": self.body_span_metadata,
             "caption": self.caption_span_metadata,
-
-    def render_template(self, variables: Dict[str, str]) -> Dict[str, str]:
-        """Render template with provided variables."""
-        rendered = {
-            "subject": self.subject,
-            "body": self.get_body_text(),
-            "caption": self.get_caption_text() or None,
         }
         return parse_span_metadata(metadata_map.get(field_name))
 
