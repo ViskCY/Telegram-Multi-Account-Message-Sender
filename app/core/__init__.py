@@ -16,11 +16,21 @@ from .throttler import Throttler, RateLimiter
 from .spintax import SpintaxProcessor
 from .compliance import ComplianceChecker, SafetyGuard
 from .analytics import AnalyticsCollector, CampaignAnalytics
+from .custom_emoji_service import (
+    CustomEmojiService,
+    CustomEmojiValidationResult,
+    get_custom_emoji_service,
+)
 
 __all__ = [
     # Telegram Client
     "TelegramClientManager",
     "TelegramClientWrapper",
+
+    # Custom emoji service
+    "CustomEmojiService",
+    "CustomEmojiValidationResult",
+    "get_custom_emoji_service",
     
     # Message Engine
     "MessageEngine",
