@@ -8,7 +8,7 @@ from typing import Optional, AsyncGenerator, Any, Dict
 from contextlib import asynccontextmanager
 
 from sqlmodel import SQLModel, create_engine, Session, select
-from sqlalchemy import event
+from sqlalchemy import event, inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.pool import StaticPool
 
@@ -67,7 +67,6 @@ class DatabaseService:
             
             # Create all tables
             self.create_tables()
-            
             self._initialized = True
             self.logger.info(f"Database initialized: {database_url}")
             
@@ -107,6 +106,7 @@ class DatabaseService:
             from ..models import Account, Campaign, Recipient, SendLog, MessageTemplate
             from ..models.recipient import RecipientList, RecipientListRecipient
             SQLModel.metadata.create_all(self.engine)
+            self._apply_schema_patches()
             self.logger.info("Database tables created successfully")
         except Exception as e:
             self.logger.error(f"Failed to create database tables: {e}")
@@ -193,25 +193,55 @@ class DatabaseService:
                 }
         except Exception as e:
             return {"error": str(e)}
-    
+
     def backup_database(self, backup_path: Optional[Path] = None) -> Path:
         """Create a backup of the database."""
         if not self.engine:
             raise RuntimeError("Database engine not initialized")
-        
+
         if not self.settings.database_url.startswith("sqlite:///"):
             raise NotImplementedError("Backup only supported for SQLite databases")
-        
+
         if backup_path is None:
             backup_path = Path(self.settings.app_data_dir) / f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
-        
+
         # For SQLite, we can simply copy the file
         import shutil
         db_path = self.settings.get_database_path()
         shutil.copy2(db_path, backup_path)
-        
+
         self.logger.info(f"Database backed up to: {backup_path}")
         return backup_path
+
+    def _apply_schema_patches(self) -> None:
+        """Apply lightweight schema updates for legacy databases."""
+        if not self.engine:
+            return
+
+        try:
+            inspector = inspect(self.engine)
+            columns = {column["name"] for column in inspector.get_columns("accounts")}
+        except Exception as exc:
+            self.logger.warning(f"Unable to inspect database schema: {exc}")
+            return
+
+        if "is_premium" not in columns:
+            self.logger.info("Adding missing 'is_premium' column to accounts table")
+            try:
+                with self.engine.begin() as connection:
+                    connection.execute(
+                        text(
+                            "ALTER TABLE accounts "
+                            "ADD COLUMN is_premium BOOLEAN NOT NULL DEFAULT 0"
+                        )
+                    )
+                    connection.execute(
+                        text("UPDATE accounts SET is_premium = 0 WHERE is_premium IS NULL")
+                    )
+            except Exception as exc:
+                self.logger.error(
+                    f"Failed to add 'is_premium' column to accounts table: {exc}"
+                )
     
     def restore_database(self, backup_path: Path) -> None:
         """Restore database from backup."""
