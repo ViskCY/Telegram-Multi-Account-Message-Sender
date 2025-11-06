@@ -149,11 +149,15 @@ class TelegramClientWrapper:
 
         try:
             message_text = text
-            entities: List[Any] = []
+            send_entities: List[Any] = entities or []
             missing_emojis: List[int] = []
 
             if "[emoji:" in text:
-                message_text, entities, missing_emojis = await self.custom_emoji_service.prepare_message_text(
+                (
+                    message_text,
+                    send_entities,
+                    missing_emojis,
+                ) = await self.custom_emoji_service.prepare_message_text(
                     self.client,
                     self.account.id,
                     text,
@@ -170,46 +174,37 @@ class TelegramClientWrapper:
 
             # Send message
             if media_path:
-                # Check if it's a URL or file path
-                if media_path.startswith(('http://', 'https://')):
-                    # It's a URL - send as URL
+                file_kwargs: Dict[str, Any] = {"caption": message_text}
+                if send_entities:
+                    file_kwargs["caption_entities"] = send_entities
+
+                if media_path.startswith(("http://", "https://")):
                     message = await self.client.send_file(
                         entity,
                         media_path,
-                        caption=text,
-                        caption_entities=entities,
+                        **file_kwargs,
                     )
                 elif os.path.exists(media_path):
-                    # It's a local file path
                     message = await self.client.send_file(
                         entity,
                         media_path,
-                        caption=text,
-                        caption_entities=entities,
-                file_kwargs: Dict[str, Any] = {"caption": message_text}
-                if entities:
-                    file_kwargs["caption_entities"] = entities
-
-                if media_path.startswith(('http://', 'https://')) or os.path.exists(media_path):
-                    message = await self.client.send_file(
-                        entity,
-                        media_path,
-                        **file_kwargs
+                        **file_kwargs,
                     )
                 else:
                     self.logger.warning(f"Media path does not exist: {media_path}")
+                    send_kwargs = {"entities": send_entities} if send_entities else {}
                     message = await self.client.send_message(
-                        entity, text, entities=entities
+                        entity,
+                        message_text,
+                        **send_kwargs,
                     )
             else:
+                send_kwargs = {"entities": send_entities} if send_entities else {}
                 message = await self.client.send_message(
-                    entity, text, entities=entities
+                    entity,
+                    message_text,
+                    **send_kwargs,
                 )
-                    send_kwargs = {"entities": entities} if entities else {}
-                    message = await self.client.send_message(entity, message_text, **send_kwargs)
-            else:
-                send_kwargs = {"entities": entities} if entities else {}
-                message = await self.client.send_message(entity, message_text, **send_kwargs)
             
             self.logger.log_telegram_event(
                 "send_message", 
