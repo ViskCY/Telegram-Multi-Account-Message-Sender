@@ -159,6 +159,41 @@ class MessageTemplate(BaseModel, SoftDeleteMixin, JSONFieldMixin, table=True):
             return ""
         return "".join(str(span.get("fallback_text", "")) for span in spans)
 
+    def _iter_custom_emoji_ids(self) -> Iterable[int]:
+        """Yield all custom emoji IDs referenced by this template."""
+
+        try:
+            from app.core.custom_emoji_service import CustomEmojiService
+        except ImportError:  # pragma: no cover - optional dependency guard
+            return iter(())
+
+        def _generator() -> Iterable[int]:
+            # Plain-text body placeholders
+            for emoji_id in CustomEmojiService.extract_custom_emoji_ids(self.body or ""):
+                yield emoji_id
+
+            # Rich body spans may include explicit emoji_id fields or nested placeholders
+            for span in self._normalize_spans(self.rich_body):
+                emoji_id = span.get("emoji_id")
+                if emoji_id is not None:
+                    try:
+                        yield int(emoji_id)
+                    except (TypeError, ValueError):
+                        continue
+
+                fallback = span.get("fallback_text")
+                if fallback:
+                    for emoji_id in CustomEmojiService.extract_custom_emoji_ids(str(fallback)):
+                        yield emoji_id
+
+        return _generator()
+
+    @property
+    def requires_premium(self) -> bool:
+        """Return ``True`` if the template uses custom emojis that require premium."""
+
+        return any(self._iter_custom_emoji_ids())
+
     def _ensure_rich_body(self) -> None:
         """Synchronize body text and rich span data."""
         if self.rich_body:
@@ -286,13 +321,6 @@ class MessageTemplate(BaseModel, SoftDeleteMixin, JSONFieldMixin, table=True):
             "subject": self.subject_span_metadata,
             "body": self.body_span_metadata,
             "caption": self.caption_span_metadata,
-
-    def render_template(self, variables: Dict[str, str]) -> Dict[str, str]:
-        """Render template with provided variables."""
-        rendered = {
-            "subject": self.subject,
-            "body": self.get_body_text(),
-            "caption": self.get_caption_text() or None,
         }
         return parse_span_metadata(metadata_map.get(field_name))
 
