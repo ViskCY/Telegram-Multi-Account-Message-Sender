@@ -17,7 +17,7 @@ from ...models import MessageTemplate
 from ...services import get_logger
 from ...services.db import get_session
 from ...services.translation import _, get_translation_manager
-from ...core import SpintaxProcessor
+from ...core import SpintaxProcessor, get_custom_emoji_service
 
 
 class TemplateDialog(QDialog):
@@ -30,6 +30,7 @@ class TemplateDialog(QDialog):
         self.template = template
         self.logger = get_logger()
         self.spintax_processor = SpintaxProcessor()
+        self.custom_emoji_service = get_custom_emoji_service()
         self.setup_ui()
         
         if template:
@@ -363,10 +364,33 @@ class TemplateDialog(QDialog):
                 QMessageBox.warning(self, _("common.error"), _("templates.name_required"))
                 return
             
-            if not self.message_edit.toPlainText().strip():
+            message_body = self.message_edit.toPlainText().strip()
+            if not message_body:
                 QMessageBox.warning(self, _("common.error"), _("templates.message_required"))
                 return
-            
+
+            # Validate custom emoji references
+            emoji_ids = self.custom_emoji_service.extract_custom_emoji_ids(message_body)
+            if emoji_ids:
+                validation = self.custom_emoji_service.validate_custom_emoji_ids(emoji_ids)
+
+                if not validation.accounts_checked:
+                    QMessageBox.warning(
+                        self,
+                        "Custom Emoji Warning",
+                        "No active Telegram accounts could be checked for custom emojis. The template will be saved, "
+                        "but sending may fail if the emojis are unavailable.",
+                    )
+                elif validation.missing_ids:
+                    missing_ids = ", ".join(str(eid) for eid in sorted(validation.missing_ids))
+                    QMessageBox.warning(
+                        self,
+                        "Custom Emoji Warning",
+                        "The template references custom emoji IDs that are not available on any configured account:\n"
+                        f"Missing IDs: {missing_ids}\n\nPlease update the template or upload the emojis before saving.",
+                    )
+                    return
+
             # Validate spintax if enabled
             if self.use_spintax_check.isChecked():
                 if not self.validate_spintax_syntax():
@@ -397,7 +421,7 @@ class TemplateDialog(QDialog):
                 # Update existing template
                 self.template.name = self.name_edit.text().strip()
                 self.template.description = self.description_edit.text().strip() or None
-                self.template.body = self.message_edit.toPlainText().strip()
+                self.template.body = message_body
                 self.template.use_spintax = self.use_spintax_check.isChecked()
                 self.template.spintax_text = self.spintax_example_edit.text().strip() or None
             else:
@@ -405,7 +429,7 @@ class TemplateDialog(QDialog):
                 self.template = MessageTemplate(
                     name=self.name_edit.text().strip(),
                     description=self.description_edit.text().strip() or None,
-                    body=self.message_edit.toPlainText().strip(),
+                    body=message_body,
                     use_spintax=self.use_spintax_check.isChecked(),
                     spintax_text=self.spintax_example_edit.text().strip() or None
                 )
