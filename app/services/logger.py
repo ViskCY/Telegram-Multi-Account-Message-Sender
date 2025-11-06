@@ -111,29 +111,29 @@ class AppLogger:
             error_handler.setFormatter(file_formatter)
             self.logger.addHandler(error_handler)
     
-    def debug(self, message: str, **kwargs):
+    def debug(self, message: str, *args: Any, **kwargs: Any):
         """Log debug message."""
-        self.logger.debug(message, **kwargs)
-    
-    def info(self, message: str, **kwargs):
+        self.logger.debug(message, *args, **kwargs)
+
+    def info(self, message: str, *args: Any, **kwargs: Any):
         """Log info message."""
-        self.logger.info(message, **kwargs)
-    
-    def warning(self, message: str, **kwargs):
+        self.logger.info(message, *args, **kwargs)
+
+    def warning(self, message: str, *args: Any, **kwargs: Any):
         """Log warning message."""
-        self.logger.warning(message, **kwargs)
-    
-    def error(self, message: str, **kwargs):
+        self.logger.warning(message, *args, **kwargs)
+
+    def error(self, message: str, *args: Any, **kwargs: Any):
         """Log error message."""
-        self.logger.error(message, **kwargs)
-    
-    def critical(self, message: str, **kwargs):
+        self.logger.error(message, *args, **kwargs)
+
+    def critical(self, message: str, *args: Any, **kwargs: Any):
         """Log critical message."""
-        self.logger.critical(message, **kwargs)
-    
-    def exception(self, message: str, **kwargs):
+        self.logger.critical(message, *args, **kwargs)
+
+    def exception(self, message: str, *args: Any, **kwargs: Any):
         """Log exception with traceback."""
-        self.logger.exception(message, **kwargs)
+        self.logger.exception(message, *args, **kwargs)
     
     def log_telegram_event(self, event_type: str, account_id: int, message: str, **kwargs):
         """Log Telegram-specific event."""
